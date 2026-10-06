@@ -38,17 +38,19 @@ final class CaptureCoordinator {
         }
     }
 
-    private func showOverlay(initialSelection: (NSScreen, CGRect)? = nil) {
-        overlay.begin(snapshots: snapshots, candidates: windowCandidates, initialSelection: initialSelection,
-            onAction: { [weak self] screen, rect, action in
-                self?.finish(screen: screen, rect: rect, action: action)
+    private func showOverlay(initialSelection: (NSScreen, CGRect)? = nil, annotations: AnnotationDocument = AnnotationDocument()) {
+        overlay.begin(snapshots: snapshots, candidates: windowCandidates, initialSelection: initialSelection, annotations: annotations,
+            onAction: { [weak self] screen, rect, action, annotations in
+                self?.finish(screen: screen, rect: rect, action: action, annotations: annotations)
             }, onCancel: { [weak self] in self?.endSession() })
     }
 
-    private func finish(screen: NSScreen, rect: CGRect, action: CaptureAction) {
+    private func finish(screen: NSScreen, rect: CGRect, action: CaptureAction, annotations: AnnotationDocument) {
         guard let snapshot = snapshots.first(where: { $0.0 === screen })?.1 else { return }
         do {
-            let image = try CaptureService.crop(image: snapshot, selection: rect, screenSize: screen.frame.size)
+            let cropped = try CaptureService.crop(image: snapshot, selection: rect, screenSize: screen.frame.size)
+            let image = try annotations.render(on: cropped, selection: rect, screenSize: screen.frame.size,
+                sourceSize: CGSize(width: snapshot.width, height: snapshot.height))
             switch action {
             case .copy:
                 let png = try CaptureService.pngData(for: image)
@@ -72,7 +74,7 @@ final class CaptureCoordinator {
                 showPin(image: image, rect: globalRect, screen: screen)
                 CaptureFeedback.success()
             case .save:
-                save(image: image, screen: screen, rect: rect)
+                save(image: image, screen: screen, rect: rect, annotations: annotations)
             case .quickSave:
                 try CaptureOutput.save(image, to: CaptureOutput.directory)
                 endSession()
@@ -81,11 +83,11 @@ final class CaptureCoordinator {
         } catch {
             overlay.dismiss()
             showError(error)
-            showOverlay(initialSelection: (screen, rect))
+            showOverlay(initialSelection: (screen, rect), annotations: annotations)
         }
     }
 
-    private func save(image: CGImage, screen: NSScreen, rect: CGRect) {
+    private func save(image: CGImage, screen: NSScreen, rect: CGRect, annotations: AnnotationDocument) {
         overlay.dismiss()
         let panel = NSSavePanel()
         panel.allowedContentTypes = [.png]
@@ -96,7 +98,7 @@ final class CaptureCoordinator {
         panel.begin { [weak self] response in
             guard let self else { return }
             guard response == .OK, let url = panel.url else {
-                self.showOverlay(initialSelection: (screen, rect))
+                self.showOverlay(initialSelection: (screen, rect), annotations: annotations)
                 return
             }
             do {
@@ -105,7 +107,7 @@ final class CaptureCoordinator {
                 CaptureFeedback.success()
             } catch {
                 self.showError(error)
-                self.showOverlay(initialSelection: (screen, rect))
+                self.showOverlay(initialSelection: (screen, rect), annotations: annotations)
             }
         }
     }
