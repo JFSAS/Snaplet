@@ -65,40 +65,80 @@ private final class SelectionView: NSView {
     var onBegin: (() -> Void)?
     private var model = SelectionModel()
     private let background: NSImage
-    private let toolbar = NSVisualEffectView()
+    private let toolbar = NSView()
+    private let hoverLabel = NSTextField(labelWithString: "")
     override var acceptsFirstResponder: Bool { true }
 
     init(frame: CGRect, image: CGImage) {
         background = NSImage(cgImage: image, size: frame.size)
         super.init(frame: frame)
         setAccessibilityLabel("截图框选区域")
-        toolbar.material = .hudWindow
-        toolbar.blendingMode = .withinWindow
-        toolbar.state = .active
-        toolbar.appearance = NSAppearance(named: .darkAqua)
+        toolbar.appearance = NSAppearance(named: .aqua)
         toolbar.wantsLayer = true
-        toolbar.layer?.cornerRadius = 10
+        toolbar.layer?.backgroundColor = NSColor.white.withAlphaComponent(0.96).cgColor
+        toolbar.layer?.cornerRadius = 7
+        toolbar.layer?.borderWidth = 0.5
+        toolbar.layer?.borderColor = NSColor.black.withAlphaComponent(0.12).cgColor
         toolbar.layer?.masksToBounds = true
         toolbar.isHidden = true
+        let divider = UI.separator()
+        divider.widthAnchor.constraint(equalToConstant: 1).isActive = true
+        divider.heightAnchor.constraint(equalToConstant: 18).isActive = true
         let stack = NSStackView(views: [
             button("重新框选", #selector(reselect)), button("预览", #selector(preview)),
-            button("保存…", #selector(save)), button("取消", #selector(cancel)),
+            button("保存…", #selector(save)), divider, button("取消", #selector(cancel)),
             button("完成 ✓", #selector(finish))
         ])
-        stack.spacing = 8
+        stack.spacing = 4
         stack.translatesAutoresizingMaskIntoConstraints = false
         toolbar.addSubview(stack)
         NSLayoutConstraint.activate([
-            stack.leadingAnchor.constraint(equalTo: toolbar.leadingAnchor, constant: 12),
-            stack.trailingAnchor.constraint(equalTo: toolbar.trailingAnchor, constant: -12),
+            stack.leadingAnchor.constraint(equalTo: toolbar.leadingAnchor, constant: 8),
+            stack.trailingAnchor.constraint(equalTo: toolbar.trailingAnchor, constant: -8),
             stack.centerYAnchor.constraint(equalTo: toolbar.centerYAnchor)
         ])
         addSubview(toolbar)
+        hoverLabel.font = .systemFont(ofSize: 11, weight: .medium)
+        hoverLabel.textColor = .white
+        hoverLabel.alignment = .center
+        hoverLabel.drawsBackground = true
+        hoverLabel.backgroundColor = .black.withAlphaComponent(0.9)
+        hoverLabel.wantsLayer = true
+        hoverLabel.layer?.cornerRadius = 6
+        hoverLabel.layer?.masksToBounds = true
+        hoverLabel.isHidden = true
+        addSubview(hoverLabel)
     }
     required init?(coder: NSCoder) { fatalError("Programmatic overlay") }
     private func button(_ title: String, _ action: Selector) -> NSButton {
-        let button = NSButton(title: title, target: self, action: action)
-        button.bezelStyle = .rounded
+        let symbols = ["重新框选": "selection.pin.in.out", "预览": "eye", "保存…": "square.and.arrow.down",
+                       "取消": "xmark", "完成 ✓": "checkmark"]
+        let button = HoverActionButton(title: title == "完成 ✓" ? "完成" : "", target: self, action: action)
+        button.image = NSImage(systemSymbolName: symbols[title] ?? "viewfinder", accessibilityDescription: nil)
+        button.imagePosition = title == "完成 ✓" ? .imageLeading : .imageOnly
+        button.bezelStyle = title == "完成 ✓" ? .rounded : .texturedRounded
+        button.isBordered = title == "完成 ✓"
+        button.contentTintColor = title == "完成 ✓" ? .white : .black.withAlphaComponent(0.8)
+        if title == "完成 ✓" { button.bezelColor = .systemBlue }
+        button.font = .systemFont(ofSize: 12, weight: .medium)
+        let hints = ["重新框选": "重新框选", "预览": "预览截图", "保存…": "选择位置保存 · ⌘S",
+                     "取消": "取消截图 · Esc", "完成 ✓": "复制并完成 · Enter / ⌘C"]
+        let hint = hints[title] ?? title
+        button.setAccessibilityHelp(hint)
+        button.onHover = { [weak self, weak button] hovering in
+            guard let self, let button else { return }
+            self.hoverLabel.isHidden = !hovering
+            guard hovering else { return }
+            self.hoverLabel.stringValue = hint
+            let width = self.hoverLabel.intrinsicContentSize.width + 20
+            let buttonRect = button.convert(button.bounds, to: self)
+            self.hoverLabel.frame = CGRect(
+                x: min(max(8, buttonRect.midX - width / 2), self.bounds.maxX - width - 8),
+                y: max(8, self.toolbar.frame.minY - 30), width: width, height: 24)
+        }
+        button.setAccessibilityLabel(title)
+        button.widthAnchor.constraint(equalToConstant: title == "完成 ✓" ? 68 : 32).isActive = true
+        button.heightAnchor.constraint(equalToConstant: 26).isActive = true
         return button
     }
     func resetSelection() { model.reset(); refresh() }
@@ -164,10 +204,11 @@ private final class SelectionView: NSView {
         onAction?(model.rect, action)
     }
     private func refresh() {
+        hoverLabel.isHidden = true
         toolbar.isHidden = !model.canConfirm
         if model.canConfirm {
-            let width: CGFloat = min(430, bounds.width - 16)
-            let height: CGFloat = 46
+            let width: CGFloat = min(252, bounds.width - 16)
+            let height: CGFloat = 36
             var y = model.rect.minY - height - 12
             if y < 8 { y = model.rect.maxY + 12 }
             if y + height > bounds.maxY - 8 { y = max(8, model.rect.minY + 12) }
@@ -185,7 +226,7 @@ private final class SelectionView: NSView {
         NSColor.black.withAlphaComponent(0.3).setFill()
         shade.fill()
         if !model.rect.isEmpty {
-            NSColor.white.setStroke()
+            NSColor.systemBlue.setStroke()
             let border = NSBezierPath(rect: model.rect.insetBy(dx: 0.5, dy: 0.5))
             border.lineWidth = 1
             border.stroke()
@@ -195,7 +236,7 @@ private final class SelectionView: NSView {
                 NSColor.white.setFill()
                 let handle = NSBezierPath(ovalIn: CGRect(x: point.x - 3, y: point.y - 3, width: 6, height: 6))
                 handle.fill()
-                NSColor.controlAccentColor.setStroke()
+                NSColor.systemBlue.setStroke()
                 handle.stroke()
             }
         }
@@ -203,16 +244,40 @@ private final class SelectionView: NSView {
         switch model.phase {
         case .idle: text = "拖动选择截图区域 · Esc 或右键取消"
         case .dragging: text = "\(Int(model.rect.width)) × \(Int(model.rect.height)) pt · 松开后调整选区"
-        case .ready: text = "拖动选区或边缘调整 · Enter 复制 · 空格保存 · Esc 取消"
+        case .ready: text = "\(Int(model.rect.width)) × \(Int(model.rect.height)) pt"
         }
         let attributes: [NSAttributedString.Key: Any] = [
-            .font: NSFont.systemFont(ofSize: 14, weight: .medium), .foregroundColor: NSColor.white
+            .font: NSFont.monospacedSystemFont(ofSize: 12, weight: .medium), .foregroundColor: NSColor.white
         ]
         let size = (text as NSString).size(withAttributes: attributes)
-        let label = CGRect(x: (bounds.width - size.width) / 2 - 14,
-            y: bounds.height - 76, width: size.width + 28, height: size.height + 20)
+        let label = CGRect(
+            x: model.phase == .idle ? (bounds.width - size.width) / 2 - 10 : min(max(8, model.rect.minX), bounds.maxX - size.width - 28),
+            y: model.phase == .idle ? bounds.height - 65 : min(bounds.maxY - size.height - 20, model.rect.maxY + 8),
+            width: size.width + 20, height: size.height + 12)
         NSColor.black.withAlphaComponent(0.7).setFill()
         NSBezierPath(roundedRect: label, xRadius: 10, yRadius: 10).fill()
-        (text as NSString).draw(at: CGPoint(x: label.minX + 14, y: label.minY + 10), withAttributes: attributes)
+        (text as NSString).draw(at: CGPoint(x: label.minX + 10, y: label.minY + 6), withAttributes: attributes)
+    }
+}
+
+
+/// Immediate, in-overlay hints stay above the frozen screen without another window.
+@MainActor
+private final class HoverActionButton: NSButton {
+    var onHover: ((Bool) -> Void)?
+    private var hoverTracking: NSTrackingArea?
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        if let hoverTracking { removeTrackingArea(hoverTracking) }
+        let area = NSTrackingArea(rect: bounds,
+            options: [.mouseEnteredAndExited, .activeAlways, .inVisibleRect], owner: self)
+        addTrackingArea(area)
+        hoverTracking = area
+    }
+    override func mouseEntered(with event: NSEvent) {
+        onHover?(true)
+    }
+    override func mouseExited(with event: NSEvent) {
+        onHover?(false)
     }
 }
