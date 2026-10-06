@@ -65,7 +65,7 @@ private final class SelectionWindow: NSWindow {
 }
 
 @MainActor
-private final class SelectionView: NSView {
+final class SelectionView: NSView, NSTextFieldDelegate {
     var onAction: ((CGRect, CaptureAction, AnnotationDocument) -> Void)?
     var onCancel: (() -> Void)?
     var onBegin: (() -> Void)?
@@ -88,6 +88,12 @@ private final class SelectionView: NSView {
     private let editbar = NSView()
     private var textField: NSTextField?
     private var textOrigin: CGPoint?
+    private var editingTextIndex: Int?
+    private var selectedTextIndex: Int?
+    private var textDrag: (index: Int, start: CGPoint, original: Annotation)?
+    private var movedText: Annotation?
+    private let deleteTextButton = HoverActionButton(title: "", target: nil, action: nil)
+    private var hintControls: [(NSView, String)] = []
     private let toolbar = NSView()
     private let hoverLabel = NSTextField(labelWithString: "")
     override var acceptsFirstResponder: Bool { true }
@@ -130,12 +136,15 @@ private final class SelectionView: NSView {
         editbar.layer?.cornerRadius = 7
         editbar.isHidden = true
         toolButtons = AnnotationTool.allCases.map { tool in
-            let button = NSButton(image: NSImage(systemSymbolName: tool.symbol, accessibilityDescription: tool.title)!,
-                                  target: self, action: #selector(chooseTool(_:)))
+            let button = HoverActionButton(title: "", target: self, action: #selector(chooseTool(_:)))
+            button.image = NSImage(systemSymbolName: tool.symbol, accessibilityDescription: tool.title)
+            button.imagePosition = .imageOnly
             button.tag = tool.rawValue
             button.bezelStyle = .texturedRounded
             button.setButtonType(.toggle)
-            button.toolTip = tool.title
+            let hint = tool == .select ? "调整选区 · 拖动文字移动 · 双击文字编辑 · Delete 删除" :
+                (tool == .text ? "文字 · 单击添加或选中 · 拖动移动 · 双击编辑" : "\(tool.title) · \(tool == .number ? "单击添加编号" : "在选区内拖动绘制")")
+            installHint(hint, for: button)
             button.setAccessibilityLabel(tool.title)
             button.widthAnchor.constraint(equalToConstant: 30).isActive = true
             return button
@@ -148,10 +157,14 @@ private final class SelectionView: NSView {
         widthPicker.widthAnchor.constraint(equalToConstant: 48).isActive = true
         widthPicker.toolTip = "线条粗细 / 文字大小"
         widthPicker.setAccessibilityLabel("标注粗细")
-        let undo = NSButton(image: NSImage(systemSymbolName: "arrow.uturn.backward", accessibilityDescription: "撤销")!, target: self, action: #selector(undoAnnotation))
-        undo.toolTip = "撤销 · ⌘Z"
-        let redo = NSButton(image: NSImage(systemSymbolName: "arrow.uturn.forward", accessibilityDescription: "重做")!, target: self, action: #selector(redoAnnotation))
-        redo.toolTip = "重做 · ⇧⌘Z"
+        let undo = HoverActionButton(title: "", target: self, action: #selector(undoAnnotation))
+        undo.image = NSImage(systemSymbolName: "arrow.uturn.backward", accessibilityDescription: "撤销")
+        installHint("撤销 · ⌘Z", for: undo)
+        let redo = HoverActionButton(title: "", target: self, action: #selector(redoAnnotation))
+        redo.image = NSImage(systemSymbolName: "arrow.uturn.forward", accessibilityDescription: "重做")
+        installHint("重做 · ⇧⌘Z", for: redo)
+        hintControls.append((colorPicker, "标注颜色 · 点击选择自定义颜色"))
+        hintControls.append((widthPicker, "粗细 / 字号 · 数值越大，线条越粗、文字越大"))
         let edits = NSStackView(views: toolButtons + [colorPicker, widthPicker, undo, redo])
         edits.spacing = 3
         edits.translatesAutoresizingMaskIntoConstraints = false
@@ -173,6 +186,14 @@ private final class SelectionView: NSView {
         hoverLabel.layer?.masksToBounds = true
         hoverLabel.isHidden = true
         addSubview(hoverLabel)
+        deleteTextButton.image = NSImage(systemSymbolName: "xmark", accessibilityDescription: "删除文字")
+        deleteTextButton.target = self
+        deleteTextButton.action = #selector(deleteSelectedText)
+        deleteTextButton.bezelStyle = .circular
+        deleteTextButton.isHidden = true
+        deleteTextButton.setAccessibilityLabel("删除文字")
+        installHint("删除选中文字 · Delete / Backspace", for: deleteTextButton)
+        addSubview(deleteTextButton)
         updateHoveredWindow(at: CGPoint(x: NSEvent.mouseLocation.x - screenFrame.minX, y: NSEvent.mouseLocation.y - screenFrame.minY))
     }
     required init?(coder: NSCoder) { fatalError("Programmatic overlay") }
@@ -190,22 +211,30 @@ private final class SelectionView: NSView {
         let hints = ["重新框选": "重新框选", "预览": "预览截图", "保存…": "选择位置保存 · ⌘S",
                      "贴图": "截图贴图 · ⌘P", "取消": "取消截图 · Esc", "完成 ✓": "复制并完成 · Enter / ⌘C"]
         let hint = hints[title] ?? title
-        button.setAccessibilityHelp(hint)
-        button.onHover = { [weak self, weak button] hovering in
-            guard let self, let button else { return }
-            self.hoverLabel.isHidden = !hovering
-            guard hovering else { return }
-            self.hoverLabel.stringValue = hint
-            let width = self.hoverLabel.intrinsicContentSize.width + 20
-            let buttonRect = button.convert(button.bounds, to: self)
-            self.hoverLabel.frame = CGRect(
-                x: min(max(8, buttonRect.midX - width / 2), self.bounds.maxX - width - 8),
-                y: max(8, self.toolbar.frame.minY - 30), width: width, height: 24)
-        }
+        installHint(hint, for: button)
         button.setAccessibilityLabel(title)
         button.widthAnchor.constraint(equalToConstant: title == "完成 ✓" ? 68 : 32).isActive = true
         button.heightAnchor.constraint(equalToConstant: 26).isActive = true
         return button
+    }
+    private func installHint(_ hint: String, for button: HoverActionButton) {
+        button.setAccessibilityHelp(hint)
+        hintControls.append((button, hint))
+        button.onHover = { [weak self, weak button] hovering in
+            guard let self, let button else { return }
+            if hovering { self.showHint(hint, for: button) }
+            else { self.hoverLabel.isHidden = true }
+        }
+    }
+    private func showHint(_ hint: String, for control: NSView) {
+        hoverLabel.stringValue = hint
+        let width = min(bounds.width - 16, hoverLabel.intrinsicContentSize.width + 20)
+        let rect = control.convert(control.bounds, to: self)
+        var y = min(toolbar.frame.minY, editbar.frame.minY) - 30
+        if y < 8 { y = max(toolbar.frame.maxY, editbar.frame.maxY) + 6 }
+        hoverLabel.frame = CGRect(x: min(max(8, rect.midX - width / 2), bounds.maxX - width - 8),
+            y: min(bounds.maxY - 32, y), width: width, height: 24)
+        hoverLabel.isHidden = false
     }
     override func updateTrackingAreas() {
         super.updateTrackingAreas()
@@ -215,6 +244,11 @@ private final class SelectionView: NSView {
         hoverTracking = area
     }
     override func mouseMoved(with event: NSEvent) {
+        let point = convert(event.locationInWindow, from: nil)
+        if let (control, hint) = hintControls.first(where: {
+            !$0.0.isHiddenOrHasHiddenAncestor && $0.0.convert($0.0.bounds, to: self).contains(point)
+        }) { showHint(hint, for: control) }
+        else { hoverLabel.isHidden = true }
         guard model.phase == .idle else { return }
         updateHoveredWindow(at: convert(event.locationInWindow, from: nil))
     }
@@ -230,6 +264,10 @@ private final class SelectionView: NSView {
         commitText()
         document.reset()
         draft = nil
+        selectedTextIndex = nil
+        textDrag = nil
+        movedText = nil
+        deleteTextButton.isHidden = true
         tool = .select
         updateToolButtons()
         model.reset()
@@ -251,28 +289,35 @@ private final class SelectionView: NSView {
             }
             addCursorRect(toolbar.frame, cursor: .arrow)
             addCursorRect(editbar.frame, cursor: .arrow)
+            if tool == .select || tool == .text {
+                for item in document.items where item.tool == .text {
+                    addCursorRect(item.textBounds.intersection(model.rect), cursor: .openHand)
+                }
+            }
+            if !deleteTextButton.isHidden { addCursorRect(deleteTextButton.frame, cursor: .arrow) }
         }
     }
     override func mouseDown(with event: NSEvent) {
         window?.makeKey()
         window?.makeFirstResponder(self)
         let point = convert(event.locationInWindow, from: nil)
+        commitText()
+        if model.canConfirm, (tool == .select || tool == .text),
+           let index = document.textIndex(at: point), model.rect.contains(point) {
+            selectedTextIndex = index
+            if event.clickCount == 2 { beginText(at: document.items[index].points[0], editing: index) }
+            else { textDrag = (index, point, document.items[index]) }
+            updateTextSelection()
+            needsDisplay = true
+            return
+        }
+        selectedTextIndex = nil
+        updateTextSelection()
         if model.canConfirm && tool != .select {
-            commitText()
             guard model.rect.contains(point) else { return }
             let width = CGFloat(Double(widthPicker.titleOfSelectedItem ?? "4") ?? 4)
             if tool == .text {
-                let field = NSTextField(frame: CGRect(x: point.x, y: point.y,
-                    width: max(24, min(240, model.rect.maxX - point.x)), height: 32))
-                field.placeholderString = "输入文字，Enter 确认"
-                field.font = .systemFont(ofSize: max(16, width * 6), weight: .semibold)
-                field.textColor = colorPicker.color
-                field.target = self
-                field.action = #selector(finishText)
-                addSubview(field)
-                textField = field
-                textOrigin = point
-                window?.makeFirstResponder(field)
+                beginText(at: point)
             } else if tool == .number {
                 document.append(Annotation(tool: tool, points: [point], color: colorPicker.color,
                     width: width, text: String(document.nextNumber)))
@@ -302,6 +347,15 @@ private final class SelectionView: NSView {
     }
     override func mouseDragged(with event: NSEvent) {
         let point = convert(event.locationInWindow, from: nil)
+        if let drag = textDrag {
+            let rect = drag.original.textBounds
+            let dx = min(max(point.x - drag.start.x, model.rect.minX - rect.minX), max(model.rect.minX - rect.minX, model.rect.maxX - rect.maxX))
+            let dy = min(max(point.y - drag.start.y, model.rect.minY - rect.minY), max(model.rect.minY - rect.minY, model.rect.maxY - rect.maxY))
+            movedText = drag.original.translated(by: CGPoint(x: dx, y: dy))
+            updateTextSelection()
+            needsDisplay = true
+            return
+        }
         if var draft {
             let clamped = CGPoint(x: min(max(point.x, model.rect.minX), model.rect.maxX),
                                   y: min(max(point.y, model.rect.minY), model.rect.maxY))
@@ -317,6 +371,16 @@ private final class SelectionView: NSView {
         refresh()
     }
     override func mouseUp(with event: NSEvent) {
+        if let drag = textDrag {
+            if let movedText, movedText.points != drag.original.points {
+                document.replace(at: drag.index, with: movedText)
+            }
+            textDrag = nil
+            movedText = nil
+            updateTextSelection()
+            needsDisplay = true
+            return
+        }
         if let draft {
             if let first = draft.points.first, let last = draft.points.last,
                draft.tool == .pen || hypot(last.x - first.x, last.y - first.y) >= 2 {
@@ -340,7 +404,10 @@ private final class SelectionView: NSView {
     override func rightMouseDown(with event: NSEvent) { onCancel?() }
     override func keyDown(with event: NSEvent) {
         switch event.keyCode {
-        case 53: onCancel?()
+        case 51, 117: deleteSelectedText()
+        case 53:
+            if selectedTextIndex != nil { selectedTextIndex = nil; updateTextSelection(); needsDisplay = true }
+            else { onCancel?() }
         case 36, 76: finish()
         case 49: confirm(.quickSave)
         default: super.keyDown(with: event)
@@ -370,20 +437,96 @@ private final class SelectionView: NSView {
         window?.makeFirstResponder(self)
         window?.invalidateCursorRects(for: self)
     }
+    private func beginText(at point: CGPoint, editing index: Int? = nil) {
+        let item = index.map { document.items[$0] }
+        let width = CGFloat(Double(widthPicker.titleOfSelectedItem ?? "4") ?? 4)
+        let field = NSTextField()
+        field.font = item?.font ?? .systemFont(ofSize: max(16, width * 6), weight: .semibold)
+        field.textColor = item?.color ?? colorPicker.color
+        field.stringValue = item?.text ?? ""
+        field.placeholderString = "输入文字"
+        field.isBezeled = false
+        field.drawsBackground = true
+        field.backgroundColor = .white.withAlphaComponent(0.96)
+        field.cell?.isScrollable = true
+        field.cell?.wraps = false
+        field.delegate = self
+        field.target = self
+        field.action = #selector(finishText)
+        textField = field
+        textOrigin = point
+        editingTextIndex = index
+        addSubview(field)
+        resizeTextEditor()
+        window?.makeFirstResponder(field)
+        needsDisplay = true
+    }
+    func controlTextDidChange(_ notification: Notification) { resizeTextEditor() }
+    private func resizeTextEditor() {
+        guard let field = textField, let origin = textOrigin, let font = field.font else { return }
+        let content = field.stringValue.isEmpty ? "输入文字" : field.stringValue
+        let measured = (content as NSString).size(withAttributes: [.font: font])
+        let height = ceil(max(measured.height, NSLayoutManager().defaultLineHeight(for: font))) + 10
+        let width = min(bounds.width - 16, max(120, ceil(measured.width) + 24))
+        let x = min(max(8, origin.x - 4), bounds.maxX - width - 8)
+        let y = min(max(8, origin.y - 4), bounds.maxY - height - 8)
+        field.frame = CGRect(x: x, y: y, width: width, height: height)
+        // Retain the measured text origin when the editor has to fit near screen edges.
+        textOrigin = CGPoint(x: x + 4, y: y + 4)
+    }
     @objc private func finishText() { commitText(); window?.makeFirstResponder(self) }
     private func commitText() {
         guard let field = textField, let origin = textOrigin else { return }
         if !field.stringValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            document.append(Annotation(tool: .text, points: [origin], color: field.textColor ?? .systemRed,
-                width: (field.font?.pointSize ?? 24) / 6, text: field.stringValue))
+            let item = Annotation(tool: .text, points: [origin], color: field.textColor ?? .systemRed,
+                width: (field.font?.pointSize ?? 24) / 6, text: field.stringValue)
+            if let editingTextIndex {
+                let previous = document.items[editingTextIndex]
+                if previous.text != item.text || previous.points != item.points {
+                    document.replace(at: editingTextIndex, with: item)
+                }
+                selectedTextIndex = editingTextIndex
+            } else {
+                document.append(item)
+                selectedTextIndex = document.items.count - 1
+            }
+        } else if let editingTextIndex {
+            document.remove(at: editingTextIndex)
+            selectedTextIndex = nil
         }
         field.removeFromSuperview()
         textField = nil
         textOrigin = nil
+        editingTextIndex = nil
+        updateTextSelection()
+        window?.invalidateCursorRects(for: self)
         needsDisplay = true
     }
-    @objc private func undoAnnotation() { commitText(); document.undo(); needsDisplay = true }
-    @objc private func redoAnnotation() { commitText(); document.redo(); needsDisplay = true }
+    private func updateTextSelection() {
+        defer { window?.invalidateCursorRects(for: self) }
+        guard let index = selectedTextIndex, document.items.indices.contains(index), textField == nil else {
+            deleteTextButton.isHidden = true
+            return
+        }
+        let rect = (movedText ?? document.items[index]).textBounds
+        deleteTextButton.frame = CGRect(x: min(bounds.maxX - 28, rect.maxX + 4),
+            y: min(bounds.maxY - 28, rect.maxY - 12), width: 24, height: 24)
+        deleteTextButton.isHidden = false
+    }
+    @objc private func deleteSelectedText() {
+        guard let index = selectedTextIndex else { return }
+        document.remove(at: index)
+        selectedTextIndex = nil
+        updateTextSelection()
+        window?.makeFirstResponder(self)
+        needsDisplay = true
+    }
+    @objc private func undoAnnotation() {
+        commitText(); document.undo(); selectedTextIndex = nil; updateTextSelection(); needsDisplay = true
+    }
+    @objc private func redoAnnotation() {
+        commitText(); document.redo(); selectedTextIndex = nil; updateTextSelection(); needsDisplay = true
+    }
     @objc private func reselect() { resetSelection(); window?.makeFirstResponder(self) }
     @objc private func pin() { confirm(.pin) }
     @objc private func preview() { confirm(.preview) }
@@ -430,7 +573,18 @@ private final class SelectionView: NSView {
         }
         NSGraphicsContext.saveGraphicsState()
         NSBezierPath(rect: model.rect).addClip()
-        document.items.forEach { $0.draw() }
+        for (index, item) in document.items.enumerated() {
+            if index == editingTextIndex { continue }
+            if index == textDrag?.index, let movedText { movedText.draw() }
+            else { item.draw() }
+        }
+        if let index = selectedTextIndex, document.items.indices.contains(index), textField == nil {
+            let box = NSBezierPath(rect: (movedText ?? document.items[index]).textBounds.insetBy(dx: -4, dy: -4))
+            NSColor.systemBlue.setStroke()
+            box.lineWidth = 1
+            box.setLineDash([4, 3], count: 2, phase: 0)
+            box.stroke()
+        }
         draft?.draw()
         NSGraphicsContext.restoreGraphicsState()
         if model.canConfirm {

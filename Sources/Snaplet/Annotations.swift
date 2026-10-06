@@ -40,6 +40,17 @@ struct Annotation {
         return CGRect(x: min(a.x, b.x), y: min(a.y, b.y),
                       width: abs(a.x - b.x), height: abs(a.y - b.y))
     }
+    var font: NSFont { .systemFont(ofSize: max(16, width * 6), weight: .semibold) }
+    var textBounds: CGRect {
+        guard let origin = points.first else { return .zero }
+        let size = (text as NSString).size(withAttributes: [.font: font])
+        return CGRect(origin: origin, size: size)
+    }
+    func translated(by delta: CGPoint) -> Annotation {
+        var copy = self
+        copy.points = points.map { CGPoint(x: $0.x + delta.x, y: $0.y + delta.y) }
+        return copy
+    }
     func draw() {
         guard let first = points.first, let last = points.last else { return }
         color.setStroke()
@@ -66,7 +77,7 @@ struct Annotation {
             }
         case .text:
             (text as NSString).draw(at: first, withAttributes: [
-                .font: NSFont.systemFont(ofSize: max(16, width * 6), weight: .semibold),
+                .font: font,
                 .foregroundColor: color])
             return
         case .number:
@@ -89,12 +100,37 @@ struct Annotation {
 @MainActor
 struct AnnotationDocument {
     private(set) var items: [Annotation] = []
-    private(set) var undone: [Annotation] = []
-    mutating func append(_ annotation: Annotation) { items.append(annotation); undone.removeAll() }
-    mutating func undo() { if let item = items.popLast() { undone.append(item) } }
-    mutating func redo() { if let item = undone.popLast() { items.append(item) } }
-    mutating func reset() { items.removeAll(); undone.removeAll() }
-    var nextNumber: Int { items.filter { $0.tool == .number }.count + 1 }
+    private var history: [[Annotation]] = []
+    private(set) var undone: [[Annotation]] = []
+    private mutating func checkpoint() { history.append(items); undone.removeAll() }
+    mutating func append(_ annotation: Annotation) { checkpoint(); items.append(annotation) }
+    mutating func replace(at index: Int, with annotation: Annotation) {
+        guard items.indices.contains(index) else { return }
+        checkpoint()
+        items[index] = annotation
+    }
+    mutating func remove(at index: Int) {
+        guard items.indices.contains(index) else { return }
+        checkpoint()
+        items.remove(at: index)
+    }
+    mutating func undo() {
+        guard let previous = history.popLast() else { return }
+        undone.append(items)
+        items = previous
+    }
+    mutating func redo() {
+        guard let next = undone.popLast() else { return }
+        history.append(items)
+        items = next
+    }
+    mutating func reset() { items.removeAll(); history.removeAll(); undone.removeAll() }
+    var nextNumber: Int {
+        (items.filter { $0.tool == .number }.compactMap { Int($0.text) }.max() ?? 0) + 1
+    }
+    func textIndex(at point: CGPoint) -> Int? {
+        items.indices.reversed().first { items[$0].tool == .text && items[$0].textBounds.insetBy(dx: -5, dy: -5).contains(point) }
+    }
 
     func render(on image: CGImage, selection: CGRect, screenSize: CGSize,
                 sourceSize: CGSize) throws -> CGImage {

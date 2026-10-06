@@ -25,6 +25,23 @@ final class AnnotationTests: XCTestCase {
     }
 
     @MainActor
+    func testMoveAndDeleteEachUndoAsOneAction() {
+        var document = AnnotationDocument()
+        let text = Annotation(tool: .text, points: [CGPoint(x: 20, y: 20)], color: .red, width: 4, text: "Text")
+        document.append(text)
+        document.replace(at: 0, with: text.translated(by: CGPoint(x: 30, y: 10)))
+        document.remove(at: 0)
+        XCTAssertTrue(document.items.isEmpty)
+        document.undo()
+        XCTAssertEqual(document.items.first?.points.first, CGPoint(x: 50, y: 30))
+        document.undo()
+        XCTAssertEqual(document.items.first?.points.first, CGPoint(x: 20, y: 20))
+        document.redo()
+        document.redo()
+        XCTAssertTrue(document.items.isEmpty)
+    }
+
+    @MainActor
     func testAnnotationExportMatchesRetinaCropAndBottomLeftCoordinates() throws {
         let context = try XCTUnwrap(CGContext(data: nil, width: 200, height: 160,
             bitsPerComponent: 8, bytesPerRow: 0, space: CGColorSpace(name: CGColorSpace.sRGB)!,
