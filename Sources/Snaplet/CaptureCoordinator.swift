@@ -7,6 +7,7 @@ final class CaptureCoordinator {
     private var isCapturing = false
     private var hiddenWindows: [NSWindow] = []
     private var snapshots: [(NSScreen, CGImage)] = []
+    private var pins: [UUID: PinnedImageController] = [:]
     private var preview: CapturePreviewController?
 
     func start() {
@@ -63,6 +64,11 @@ final class CaptureCoordinator {
                 controller.showWindow(nil)
                 NSApp.activate(ignoringOtherApps: true)
                 CaptureFeedback.success()
+            case .pin:
+                let globalRect = rect.offsetBy(dx: screen.frame.minX, dy: screen.frame.minY)
+                endSession()
+                showPin(image: image, rect: globalRect, screen: screen)
+                CaptureFeedback.success()
             case .save:
                 save(image: image, screen: screen, rect: rect)
             case .quickSave:
@@ -108,6 +114,41 @@ final class CaptureCoordinator {
         hiddenWindows.forEach { $0.orderFront(nil) }
         hiddenWindows.removeAll()
         isCapturing = false
+    }
+
+    func pinClipboard() {
+        guard !isCapturing else { return }
+        guard let source = NSImage(pasteboard: .general),
+              let image = source.cgImage(forProposedRect: nil, context: nil, hints: nil),
+              let screen = NSScreen.main else {
+            let alert = NSAlert()
+            alert.messageText = "剪贴板中没有图片"
+            alert.informativeText = "请先复制一张图片，再使用剪贴板贴图。"
+            alert.runModal()
+            return
+        }
+        let size = CGSize(width: CGFloat(image.width) / screen.backingScaleFactor,
+                          height: CGFloat(image.height) / screen.backingScaleFactor)
+        let rect = PinGeometry.fit(size: size, centeredAt: CGPoint(x: screen.visibleFrame.midX, y: screen.visibleFrame.midY), within: screen.visibleFrame)
+        showPin(image: image, rect: rect, screen: screen)
+        CaptureFeedback.success()
+    }
+
+    func togglePins() {
+        let hide = pins.values.contains { $0.window?.isVisible == true }
+        for controller in pins.values {
+            if hide { controller.window?.orderOut(nil) }
+            else { controller.window?.orderFrontRegardless() }
+        }
+    }
+
+    private func showPin(image: CGImage, rect: CGRect, screen: NSScreen) {
+        let id = UUID()
+        let controller = PinnedImageController(image: image, rect: rect, screen: screen)
+        pins[id] = controller
+        controller.onClose = { [weak self] in self?.pins.removeValue(forKey: id) }
+        controller.showWindow(nil)
+        controller.window?.makeKeyAndOrderFront(nil)
     }
 
     private func showError(_ error: Error) {

@@ -86,7 +86,7 @@ private final class SelectionView: NSView {
         divider.heightAnchor.constraint(equalToConstant: 18).isActive = true
         let stack = NSStackView(views: [
             button("重新框选", #selector(reselect)), button("预览", #selector(preview)),
-            button("保存…", #selector(save)), divider, button("取消", #selector(cancel)),
+            button("贴图", #selector(pin)), button("保存…", #selector(save)), divider, button("取消", #selector(cancel)),
             button("完成 ✓", #selector(finish))
         ])
         stack.spacing = 4
@@ -112,7 +112,7 @@ private final class SelectionView: NSView {
     required init?(coder: NSCoder) { fatalError("Programmatic overlay") }
     private func button(_ title: String, _ action: Selector) -> NSButton {
         let symbols = ["重新框选": "selection.pin.in.out", "预览": "eye", "保存…": "square.and.arrow.down",
-                       "取消": "xmark", "完成 ✓": "checkmark"]
+                       "贴图": "pin.fill", "取消": "xmark", "完成 ✓": "checkmark"]
         let button = HoverActionButton(title: title == "完成 ✓" ? "完成" : "", target: self, action: action)
         button.image = NSImage(systemSymbolName: symbols[title] ?? "viewfinder", accessibilityDescription: nil)
         button.imagePosition = title == "完成 ✓" ? .imageLeading : .imageOnly
@@ -122,7 +122,7 @@ private final class SelectionView: NSView {
         if title == "完成 ✓" { button.bezelColor = .systemBlue }
         button.font = .systemFont(ofSize: 12, weight: .medium)
         let hints = ["重新框选": "重新框选", "预览": "预览截图", "保存…": "选择位置保存 · ⌘S",
-                     "取消": "取消截图 · Esc", "完成 ✓": "复制并完成 · Enter / ⌘C"]
+                     "贴图": "截图贴图 · ⌘P", "取消": "取消截图 · Esc", "完成 ✓": "复制并完成 · Enter / ⌘C"]
         let hint = hints[title] ?? title
         button.setAccessibilityHelp(hint)
         button.onHover = { [weak self, weak button] hovering in
@@ -192,9 +192,11 @@ private final class SelectionView: NSView {
         }
         if event.keyCode == 8 { finish(); return true }
         if event.keyCode == 1 { save(); return true }
+        if event.keyCode == 35 { pin(); return true }
         return super.performKeyEquivalent(with: event)
     }
     @objc private func reselect() { resetSelection(); window?.makeFirstResponder(self) }
+    @objc private func pin() { confirm(.pin) }
     @objc private func preview() { confirm(.preview) }
     @objc private func save() { confirm(.save) }
     @objc private func cancel() { onCancel?() }
@@ -207,7 +209,7 @@ private final class SelectionView: NSView {
         hoverLabel.isHidden = true
         toolbar.isHidden = !model.canConfirm
         if model.canConfirm {
-            let width: CGFloat = min(252, bounds.width - 16)
+            let width: CGFloat = min(288, bounds.width - 16)
             let height: CGFloat = 36
             var y = model.rect.minY - height - 12
             if y < 8 { y = model.rect.maxY + 12 }

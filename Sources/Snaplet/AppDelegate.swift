@@ -23,6 +23,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let captureItem = NSMenuItem(title: "区域截图…", action: #selector(startCapture), keyEquivalent: "")
         captureItem.target = self
         menu.addItem(captureItem)
+        let clipboardItem = NSMenuItem(title: "剪贴板贴图", action: #selector(pinClipboard), keyEquivalent: "")
+        clipboardItem.target = self
+        menu.addItem(clipboardItem)
+        let toggleItem = NSMenuItem(title: "隐藏 / 显示全部贴图", action: #selector(togglePins), keyEquivalent: "")
+        toggleItem.target = self
+        menu.addItem(toggleItem)
         menu.addItem(.separator())
         let openItem = NSMenuItem(
             title: "打开 Snaplet",
@@ -61,6 +67,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         mainWindowController?.showWindow(nil)
         NSApplication.shared.activate(ignoringOtherApps: true)
     }
+
+    @objc private func pinClipboard() { captureCoordinator.pinClipboard() }
+    @objc private func togglePins() { captureCoordinator.togglePins() }
 
     @objc private func startCapture() {
         captureCoordinator.start()

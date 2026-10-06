@@ -76,4 +76,4 @@ struct SelectionModel {
     }
 }
 
-enum CaptureAction { case copy, save, quickSave, preview }
+enum CaptureAction { case copy, save, quickSave, preview, pin }
