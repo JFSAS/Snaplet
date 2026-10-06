@@ -9,8 +9,7 @@ final class CaptureCoordinator {
 
     func start() {
         guard !isCapturing else { return }
-        guard CGPreflightScreenCaptureAccess() else {
-            CGRequestScreenCaptureAccess()
+        guard CGPreflightScreenCaptureAccess() || CGRequestScreenCaptureAccess() else {
             showPermissionHelp()
             return
         }
