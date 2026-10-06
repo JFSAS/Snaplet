@@ -3,17 +3,30 @@ import AppKit
 @MainActor
 final class MainWindowController: NSWindowController, NSWindowDelegate {
     private let onCapture: () -> Void
+    private let onRecord: (Bool) -> Void
+    private let recording: RecordingCoordinator
+    private let recordShortcut: GlobalShortcut
+    private let pauseShortcut: GlobalShortcut
+    private let audioPicker = NSPopUpButton()
+    private let qualityPicker = NSPopUpButton()
+    private let fpsPicker = NSPopUpButton()
+    private let cursorToggle = NSButton(checkboxWithTitle: "显示鼠标光标", target: nil, action: nil)
     private let shortcut: GlobalShortcut
     private let paneHost = NSView()
     private var panes: [NSView] = []
     private var navigation: [NSButton] = []
     private let saveLocation = NSTextField(labelWithString: "")
 
-    init(shortcut: GlobalShortcut, onCapture: @escaping () -> Void) {
+    init(shortcut: GlobalShortcut, recording: RecordingCoordinator, recordShortcut: GlobalShortcut,
+         pauseShortcut: GlobalShortcut, onRecord: @escaping (Bool) -> Void, onCapture: @escaping () -> Void) {
+        self.recording = recording
+        self.recordShortcut = recordShortcut
+        self.pauseShortcut = pauseShortcut
+        self.onRecord = onRecord
         self.shortcut = shortcut
         self.onCapture = onCapture
         let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 620, height: 360),
+            contentRect: NSRect(x: 0, y: 0, width: 680, height: 470),
             styleMask: [.titled, .closable, .miniaturizable],
             backing: .buffered,
             defer: false
@@ -104,11 +117,11 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         ], spacing: 16)
         let settingsPane = UI.vertical([
             UI.label("保存与声音", size: 20, weight: .semibold),
-            UI.label("设置截图的保存位置与完成反馈。", size: 12, color: .secondaryLabelColor),
+            UI.label("设置截图和录屏的保存位置与完成反馈。", size: 12, color: .secondaryLabelColor),
             settingsCard,
             UI.label("按空格直接保存 PNG；按 ⌘S 选择保存位置。", size: 11, color: .secondaryLabelColor)
         ], spacing: 16)
-        panes = [capturePane, settingsPane]
+        panes = [capturePane, recordingPane(), settingsPane]
 
         let sidebar = NSVisualEffectView()
         sidebar.material = .sidebar
@@ -116,9 +129,10 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         sidebar.state = .active
         let brand = UI.horizontal([logo, UI.label("Snaplet", size: 17, weight: .semibold)], spacing: 8)
         let captureNav = navigationButton("截图", symbol: "viewfinder", index: 0)
-        let settingsNav = navigationButton("保存与声音", symbol: "slider.horizontal.3", index: 1)
-        navigation = [captureNav, settingsNav]
-        let sidebarBody = UI.vertical([brand, UI.separator(), captureNav, settingsNav], spacing: 10)
+        let recordNav = navigationButton("录屏", symbol: "record.circle", index: 1)
+        let settingsNav = navigationButton("保存与声音", symbol: "slider.horizontal.3", index: 2)
+        navigation = [captureNav, recordNav, settingsNav]
+        let sidebarBody = UI.vertical([brand, UI.separator(), captureNav, recordNav, settingsNav], spacing: 10)
         sidebarBody.translatesAutoresizingMaskIntoConstraints = false
         sidebar.addSubview(sidebarBody)
         NSLayoutConstraint.activate([
@@ -146,6 +160,69 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         ])
         showPane(0)
     }
+
+    private func recordingPane() -> NSView {
+        let region = NSButton(title: "区域 / 窗口录制", target: self, action: #selector(recordRegion))
+        let full = NSButton(title: "全屏录制", target: self, action: #selector(recordScreen))
+        for button in [region, full] { button.bezelStyle = .rounded }
+        region.bezelColor = .systemRed
+        audioPicker.addItems(withTitles: ["无声音", "系统声音", "麦克风", "系统声音 + 麦克风"])
+        audioPicker.selectItem(at: max(0, min(3, UserDefaults.standard.object(forKey: "recordingAudio") as? Int ?? 1)))
+        qualityPicker.addItems(withTitles: ["720p", "1080p", "原始分辨率（最高 4K）"])
+        qualityPicker.selectItem(at: max(0, min(2, UserDefaults.standard.object(forKey: "recordingQuality") as? Int ?? 1)))
+        fpsPicker.addItems(withTitles: ["15 FPS", "30 FPS", "60 FPS"])
+        fpsPicker.selectItem(at: max(0, min(2, UserDefaults.standard.object(forKey: "recordingFPS") as? Int ?? 1)))
+        cursorToggle.state = UserDefaults.standard.object(forKey: "recordingCursor") as? Bool == false ? .off : .on
+        for picker in [audioPicker, qualityPicker, fpsPicker] {
+            picker.target = self; picker.action = #selector(updateRecordingOptions)
+        }
+        cursorToggle.target = self; cursorToggle.action = #selector(updateRecordingOptions)
+        updateRecordingOptions()
+        let settings = UI.vertical([
+            settingRow("speaker.wave.2", title: "声音", detail: UI.label("讲解时可同时录入麦克风", size: 11, color: .secondaryLabelColor), control: audioPicker),
+            settingRow("video", title: "画质", detail: UI.label("保持选区比例，不放大小区域", size: 11, color: .secondaryLabelColor), control: qualityPicker),
+            settingRow("speedometer", title: "帧率", detail: cursorToggle, control: fpsPicker)
+        ], spacing: 12)
+        let card = SurfaceView(tint: .controlBackgroundColor, opacity: 1, radius: 8)
+        UI.embed(settings, in: card, inset: 14)
+        return UI.vertical([
+            UI.label("录屏", size: 20, weight: .semibold),
+            UI.label("框选区域或选择窗口范围，倒计时 3 秒后录制。", size: 12, color: .secondaryLabelColor),
+            UI.horizontal([region, full, UI.spacer()], spacing: 10), card,
+            UI.horizontal([UI.label("开始", size: 12), recordingShortcutButton(recordShortcut),
+                           UI.label("暂停 / 继续", size: 12), recordingShortcutButton(pauseShortcut)], spacing: 8),
+            UI.label("停止后保存 MP4 并在 Finder 中显示；声音选项需相应权限。", size: 11, color: .secondaryLabelColor)
+        ], spacing: 14)
+    }
+    private func recordingShortcutButton(_ shortcut: GlobalShortcut) -> NSButton {
+        let button = ShortcutRecorderButton()
+        button.title = shortcut.shortcut.displayName
+        button.font = .monospacedSystemFont(ofSize: 12, weight: .medium)
+        button.toolTip = shortcut.registrationError ?? "点击修改全局快捷键"
+        button.onBeginRecording = { shortcut.suspend() }
+        button.onEndRecording = { shortcut.resume() }
+        button.onShortcut = { [weak button] candidate in
+            if shortcut.update(candidate) { button?.title = candidate.displayName }
+            else {
+                let alert = NSAlert(); alert.messageText = "无法使用该快捷键"
+                alert.informativeText = shortcut.registrationError ?? "请更换组合键。"; alert.runModal()
+            }
+        }
+        return button
+    }
+    @objc private func updateRecordingOptions() {
+        guard !recording.busy else { return }
+        let audio = audioPicker.indexOfSelectedItem
+        recording.options = RecordingOptions(systemAudio: audio == 1 || audio == 3, microphone: audio == 2 || audio == 3,
+            showsCursor: cursorToggle.state == .on, framesPerSecond: [15, 30, 60][fpsPicker.indexOfSelectedItem],
+            maximumHeight: [720, 1080, 0][qualityPicker.indexOfSelectedItem])
+        UserDefaults.standard.set(audio, forKey: "recordingAudio")
+        UserDefaults.standard.set(qualityPicker.indexOfSelectedItem, forKey: "recordingQuality")
+        UserDefaults.standard.set(fpsPicker.indexOfSelectedItem, forKey: "recordingFPS")
+        UserDefaults.standard.set(cursorToggle.state == .on, forKey: "recordingCursor")
+    }
+    @objc private func recordRegion() { updateRecordingOptions(); onRecord(false) }
+    @objc private func recordScreen() { updateRecordingOptions(); onRecord(true) }
 
     private func navigationButton(_ title: String, symbol: String, index: Int) -> NSButton {
         let button = NSButton(title: title, target: self, action: #selector(navigate(_:)))

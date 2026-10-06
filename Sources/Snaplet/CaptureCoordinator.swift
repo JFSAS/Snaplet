@@ -3,6 +3,7 @@ import UniformTypeIdentifiers
 
 @MainActor
 final class CaptureCoordinator {
+    let recording = RecordingCoordinator()
     private let overlay = SelectionOverlay()
     private var isCapturing = false
     private var hiddenWindows: [NSWindow] = []
@@ -11,8 +12,13 @@ final class CaptureCoordinator {
     private var pins: [UUID: PinnedImageController] = [:]
     private var preview: CapturePreviewController?
 
-    func start() {
+    func startRecording(fullScreen: Bool = false) {
         guard !isCapturing else { return }
+        recording.start(fullScreen: fullScreen)
+    }
+
+    func start() {
+        guard !isCapturing, !recording.busy else { return }
         guard CGPreflightScreenCaptureAccess() || CGRequestScreenCaptureAccess() else {
             showPermissionHelp()
             return
@@ -122,7 +128,7 @@ final class CaptureCoordinator {
     }
 
     func pinClipboard() {
-        guard !isCapturing else { return }
+        guard !isCapturing, !recording.busy else { return }
         guard let source = NSImage(pasteboard: .general),
               let image = source.cgImage(forProposedRect: nil, context: nil, hints: nil),
               let screen = NSScreen.main else {

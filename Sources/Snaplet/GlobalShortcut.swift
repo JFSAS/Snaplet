@@ -51,13 +51,17 @@ final class GlobalShortcut {
     private let action: () -> Void
     private(set) var shortcut: ScreenshotShortcut
     private(set) var registrationError: String?
-    private let defaultsKey = "screenshotShortcut"
+    private let defaultsKey: String
+    private let identifier: UInt32
 
-    init(action: @escaping () -> Void) {
+    init(defaultsKey: String = "screenshotShortcut", defaultShortcut: ScreenshotShortcut = .defaultShortcut,
+         identifier: UInt32 = 1, action: @escaping () -> Void) {
+        self.defaultsKey = defaultsKey
+        self.identifier = identifier
         self.action = action
         shortcut = UserDefaults.standard.data(forKey: defaultsKey)
             .flatMap { try? JSONDecoder().decode(ScreenshotShortcut.self, from: $0) }
-            ?? .defaultShortcut
+            ?? defaultShortcut
     }
 
     func start() {
@@ -69,12 +73,13 @@ final class GlobalShortcut {
             let result = GetEventParameter(event, EventParamName(kEventParamDirectObject),
                 EventParamType(typeEventHotKeyID), nil, MemoryLayout<EventHotKeyID>.size,
                 nil, &identifier)
-            guard result == noErr, identifier.signature == 0x534E4150, identifier.id == 1 else {
+            let owner = Unmanaged<GlobalShortcut>.fromOpaque(context).takeUnretainedValue()
+            guard result == noErr, identifier.signature == 0x534E4150, identifier.id == owner.identifier else {
                 return OSStatus(eventNotHandledErr)
             }
             // Application event handlers are delivered on the main event loop.
             MainActor.assumeIsolated {
-                Unmanaged<GlobalShortcut>.fromOpaque(context).takeUnretainedValue().action()
+                owner.action()
             }
             return noErr
         }, 1, &eventType, Unmanaged.passUnretained(self).toOpaque(), &eventHandler)
@@ -124,7 +129,7 @@ final class GlobalShortcut {
 
     private func register(_ shortcut: ScreenshotShortcut) -> Bool {
         RegisterEventHotKey(shortcut.keyCode, shortcut.modifiers,
-            EventHotKeyID(signature: 0x534E4150, id: 1), GetApplicationEventTarget(),
+            EventHotKeyID(signature: 0x534E4150, id: identifier), GetApplicationEventTarget(),
             OptionBits(kEventHotKeyExclusive), &hotKey) == noErr
     }
 }

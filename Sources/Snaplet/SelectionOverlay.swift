@@ -7,7 +7,7 @@ final class SelectionOverlay {
 
     func begin(snapshots: [(NSScreen, CGImage)], candidates: [WindowCandidate],
                initialSelection: (NSScreen, CGRect)? = nil,
-               annotations: AnnotationDocument = AnnotationDocument(),
+               annotations: AnnotationDocument = AnnotationDocument(), recording: Bool = false,
                onAction: @escaping (NSScreen, CGRect, CaptureAction, AnnotationDocument) -> Void,
                onCancel: @escaping () -> Void) {
         dismiss()
@@ -22,7 +22,7 @@ final class SelectionOverlay {
             window.acceptsMouseMovedEvents = true
             window.isReleasedWhenClosed = false
             window.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
-            let view = SelectionView(frame: CGRect(origin: .zero, size: screen.frame.size), image: image, screenFrame: screen.frame, candidates: candidates)
+            let view = SelectionView(frame: CGRect(origin: .zero, size: screen.frame.size), image: image, screenFrame: screen.frame, candidates: candidates, recording: recording)
             view.onAction = { rect, action, document in onAction(screen, rect, action, document) }
             view.onCancel = { [weak self] in self?.cancel() }
             view.onBegin = { [weak self, weak view] in
@@ -70,6 +70,7 @@ final class SelectionView: NSView, NSTextFieldDelegate {
     var onCancel: (() -> Void)?
     var onBegin: (() -> Void)?
     private var model = SelectionModel()
+    private let recording: Bool
     private let background: NSImage
     private let screenFrame: CGRect
     private let candidates: [WindowCandidate]
@@ -98,13 +99,14 @@ final class SelectionView: NSView, NSTextFieldDelegate {
     private let hoverLabel = NSTextField(labelWithString: "")
     override var acceptsFirstResponder: Bool { true }
 
-    init(frame: CGRect, image: CGImage, screenFrame: CGRect, candidates: [WindowCandidate]) {
+    init(frame: CGRect, image: CGImage, screenFrame: CGRect, candidates: [WindowCandidate], recording: Bool = false) {
+        self.recording = recording
         imageSize = CGSize(width: image.width, height: image.height)
         self.screenFrame = screenFrame
         self.candidates = candidates
         background = NSImage(cgImage: image, size: frame.size)
         super.init(frame: frame)
-        setAccessibilityLabel("截图框选区域")
+        setAccessibilityLabel(recording ? "录屏框选区域" : "截图框选区域")
         toolbar.appearance = NSAppearance(named: .aqua)
         toolbar.wantsLayer = true
         toolbar.layer?.backgroundColor = NSColor.white.withAlphaComponent(0.96).cgColor
@@ -116,12 +118,18 @@ final class SelectionView: NSView, NSTextFieldDelegate {
         let divider = UI.separator()
         divider.widthAnchor.constraint(equalToConstant: 1).isActive = true
         divider.heightAnchor.constraint(equalToConstant: 18).isActive = true
-        let stack = NSStackView(views: [
+        let stack = NSStackView(views: recording ? [
+            button("重新框选", #selector(reselect)), button("取消", #selector(cancel)),
+            button("开始录制", #selector(finish))
+        ] : [
             button("重新框选", #selector(reselect)), button("预览", #selector(preview)),
             button("贴图", #selector(pin)), button("保存…", #selector(save)), divider, button("取消", #selector(cancel)),
             button("完成 ✓", #selector(finish))
         ])
-        stack.spacing = 4
+        stack.spacing = 6
+        stack.alignment = .centerY
+        stack.distribution = .fill
+        stack.heightAnchor.constraint(equalToConstant: 28).isActive = true
         stack.translatesAutoresizingMaskIntoConstraints = false
         toolbar.addSubview(stack)
         NSLayoutConstraint.activate([
@@ -134,24 +142,39 @@ final class SelectionView: NSView, NSTextFieldDelegate {
         editbar.wantsLayer = true
         editbar.layer?.backgroundColor = NSColor.white.withAlphaComponent(0.96).cgColor
         editbar.layer?.cornerRadius = 7
+        editbar.layer?.borderWidth = 0.5
+        editbar.layer?.borderColor = NSColor.black.withAlphaComponent(0.12).cgColor
         editbar.isHidden = true
         toolButtons = AnnotationTool.allCases.map { tool in
             let button = HoverActionButton(title: "", target: self, action: #selector(chooseTool(_:)))
+            button.usesToolbarGeometry = true
             button.image = NSImage(systemSymbolName: tool.symbol, accessibilityDescription: tool.title)
             button.imagePosition = .imageOnly
             button.tag = tool.rawValue
             button.bezelStyle = .texturedRounded
+            button.isBordered = false
+            button.contentTintColor = .black.withAlphaComponent(0.8)
+            button.wantsLayer = true
+            button.layer?.cornerRadius = 5
             button.setButtonType(.toggle)
+            (button.cell as? NSButtonCell)?.showsStateBy = []
+            (button.cell as? NSButtonCell)?.highlightsBy = []
             let hint = tool == .select ? "调整选区 · 拖动标注移动 · 双击文字编辑 · Delete 删除" :
                 (tool == .text ? "文字 · 单击添加 · 拖动已有标注移动 · 双击文字编辑" : "\(tool.title) · \(tool == .number ? "单击添加编号" : "空白处拖动绘制") · 拖动已有标注移动")
             installHint(hint, for: button)
             button.setAccessibilityLabel(tool.title)
-            button.widthAnchor.constraint(equalToConstant: 30).isActive = true
+            button.widthAnchor.constraint(equalToConstant: 32).isActive = true
+            button.heightAnchor.constraint(equalToConstant: 28).isActive = true
             return button
         }
+        colorPicker.controlSize = .small
+        colorPicker.colorWellStyle = .minimal
+        colorPicker.heightAnchor.constraint(equalToConstant: 28).isActive = true
         colorPicker.color = .systemRed
         colorPicker.widthAnchor.constraint(equalToConstant: 36).isActive = true
         colorPicker.setAccessibilityLabel("标注颜色")
+        widthPicker.controlSize = .small
+        widthPicker.heightAnchor.constraint(equalToConstant: 28).isActive = true
         widthPicker.addItems(withTitles: ["2", "4", "6", "8", "12"])
         widthPicker.selectItem(withTitle: "4")
         widthPicker.widthAnchor.constraint(equalToConstant: 48).isActive = true
@@ -163,10 +186,21 @@ final class SelectionView: NSView, NSTextFieldDelegate {
         let redo = HoverActionButton(title: "", target: self, action: #selector(redoAnnotation))
         redo.image = NSImage(systemSymbolName: "arrow.uturn.forward", accessibilityDescription: "重做")
         installHint("重做 · ⇧⌘Z", for: redo)
+        for button in [undo, redo] {
+            button.usesToolbarGeometry = true
+            button.isBordered = false
+            button.imagePosition = .imageOnly
+            button.contentTintColor = .black.withAlphaComponent(0.8)
+            button.widthAnchor.constraint(equalToConstant: 32).isActive = true
+            button.heightAnchor.constraint(equalToConstant: 28).isActive = true
+        }
         hintControls.append((colorPicker, "标注颜色 · 点击选择自定义颜色"))
         hintControls.append((widthPicker, "粗细 / 字号 · 数值越大，线条越粗、文字越大"))
         let edits = NSStackView(views: toolButtons + [colorPicker, widthPicker, undo, redo])
-        edits.spacing = 3
+        edits.spacing = 6
+        edits.alignment = .centerY
+        edits.distribution = .fill
+        edits.heightAnchor.constraint(equalToConstant: 28).isActive = true
         edits.translatesAutoresizingMaskIntoConstraints = false
         editbar.addSubview(edits)
         NSLayoutConstraint.activate([
@@ -199,22 +233,37 @@ final class SelectionView: NSView, NSTextFieldDelegate {
     required init?(coder: NSCoder) { fatalError("Programmatic overlay") }
     private func button(_ title: String, _ action: Selector) -> NSButton {
         let symbols = ["重新框选": "selection.pin.in.out", "预览": "eye", "保存…": "square.and.arrow.down",
-                       "贴图": "pin.fill", "取消": "xmark", "完成 ✓": "checkmark"]
-        let button = HoverActionButton(title: title == "完成 ✓" ? "完成" : "", target: self, action: action)
+                       "贴图": "pin.fill", "取消": "xmark", "完成 ✓": "checkmark", "开始录制": "record.circle"]
+        let primary = title == "完成 ✓" || title == "开始录制"
+        let button = HoverActionButton(title: primary ? (recording ? "开始录制" : "完成") : "", target: self, action: action)
+        button.usesToolbarGeometry = true
         button.image = NSImage(systemSymbolName: symbols[title] ?? "viewfinder", accessibilityDescription: nil)
-        button.imagePosition = title == "完成 ✓" ? .imageLeading : .imageOnly
-        button.bezelStyle = title == "完成 ✓" ? .rounded : .texturedRounded
-        button.isBordered = title == "完成 ✓"
-        button.contentTintColor = title == "完成 ✓" ? .white : .black.withAlphaComponent(0.8)
-        if title == "完成 ✓" { button.bezelColor = .systemBlue }
+        button.imagePosition = primary ? .imageLeading : .imageOnly
+        button.bezelStyle = primary ? .rounded : .texturedRounded
+        button.isBordered = false
+        button.contentTintColor = .black.withAlphaComponent(0.8)
         button.font = .systemFont(ofSize: 12, weight: .medium)
+        if primary {
+            button.contentTintColor = .black.withAlphaComponent(0.85)
+            button.imageHugsTitle = true
+            button.alignment = .center
+            if recording {
+                button.image = button.image?.withSymbolConfiguration(.init(paletteColors: [.systemRed]))
+                button.image?.isTemplate = false
+            }
+            button.wantsLayer = true
+            button.layer?.backgroundColor = NSColor(white: 0.92, alpha: 1).cgColor
+            button.layer?.cornerRadius = 5
+            button.attributedTitle = NSAttributedString(string: button.title,
+                attributes: [.foregroundColor: NSColor.black.withAlphaComponent(0.85), .font: button.font!])
+        }
         let hints = ["重新框选": "重新框选", "预览": "预览截图", "保存…": "选择位置保存 · ⌘S",
-                     "贴图": "截图贴图 · ⌘P", "取消": "取消截图 · Esc", "完成 ✓": "复制并完成 · Enter / ⌘C"]
-        let hint = hints[title] ?? title
+                     "贴图": "截图贴图 · ⌘P", "取消": "取消截图 · Esc", "完成 ✓": "复制并完成 · Enter / ⌘C", "开始录制": "录制选区 · Enter"]
+        let hint = title == "取消" && recording ? "取消录屏 · Esc" : (hints[title] ?? title)
         installHint(hint, for: button)
         button.setAccessibilityLabel(title)
-        button.widthAnchor.constraint(equalToConstant: title == "完成 ✓" ? 68 : 32).isActive = true
-        button.heightAnchor.constraint(equalToConstant: 26).isActive = true
+        button.widthAnchor.constraint(equalToConstant: primary ? (recording ? 104 : 76) : 32).isActive = true
+        button.heightAnchor.constraint(equalToConstant: 28).isActive = true
         return button
     }
     private func installHint(_ hint: String, for button: HoverActionButton) {
@@ -408,12 +457,12 @@ final class SelectionView: NSView, NSTextFieldDelegate {
             if selectedAnnotationIndex != nil { selectedAnnotationIndex = nil; updateAnnotationSelection(); needsDisplay = true }
             else { onCancel?() }
         case 36, 76: finish()
-        case 49: confirm(.quickSave)
+        case 49: recording ? finish() : confirm(.quickSave)
         default: super.keyDown(with: event)
         }
     }
     override func performKeyEquivalent(with event: NSEvent) -> Bool {
-        guard event.modifierFlags.contains(.command), model.canConfirm else {
+        guard !recording, event.modifierFlags.contains(.command), model.canConfirm else {
             return super.performKeyEquivalent(with: event)
         }
         if textField != nil { return super.performKeyEquivalent(with: event) }
@@ -427,7 +476,10 @@ final class SelectionView: NSView, NSTextFieldDelegate {
         return super.performKeyEquivalent(with: event)
     }
     private func updateToolButtons() {
-        toolButtons.forEach { $0.state = $0.tag == tool.rawValue ? .on : .off }
+        toolButtons.forEach {
+            $0.state = $0.tag == tool.rawValue ? .on : .off
+            $0.layer?.backgroundColor = ($0.state == .on ? NSColor(white: 0.92, alpha: 1) : .clear).cgColor
+        }
     }
     @objc private func chooseTool(_ sender: NSButton) {
         commitText()
@@ -542,18 +594,18 @@ final class SelectionView: NSView, NSTextFieldDelegate {
     private func refresh() {
         hoverLabel.isHidden = true
         toolbar.isHidden = !model.canConfirm
-        editbar.isHidden = !model.canConfirm
+        editbar.isHidden = recording || !model.canConfirm
         if model.canConfirm {
-            let width: CGFloat = min(288, bounds.width - 16)
-            let height: CGFloat = 78
+            let width: CGFloat = min(recording ? 196 : 289, bounds.width - 16)
+            let height: CGFloat = recording ? 40 : 86
             var y = model.rect.minY - height - 12
             if y < 8 { y = model.rect.maxY + 12 }
             if y + height > bounds.maxY - 8 { y = max(8, model.rect.minY + 12) }
             toolbar.frame = CGRect(x: min(max(8, model.rect.maxX - width), bounds.maxX - width - 8),
-                                   y: y, width: width, height: 36)
-            let editWidth: CGFloat = min(430, bounds.width - 16)
+                                   y: y, width: width, height: 40)
+            let editWidth: CGFloat = min(CGFloat(AnnotationTool.allCases.count * 32 + 36 + 48 + 64 + 11 * 6 + 16), bounds.width - 16)
             editbar.frame = CGRect(x: min(max(8, model.rect.maxX - editWidth), bounds.maxX - editWidth - 8),
-                                  y: y + 42, width: editWidth, height: 36)
+                                  y: y + 46, width: editWidth, height: 40)
         }
         window?.invalidateCursorRects(for: self)
         needsDisplay = true
@@ -622,6 +674,12 @@ final class SelectionView: NSView, NSTextFieldDelegate {
 /// Immediate, in-overlay hints stay above the frozen screen without another window.
 @MainActor
 private final class HoverActionButton: NSButton {
+    var usesToolbarGeometry = false
+    // Native bezel styles add alignment insets even when their borders are hidden.
+    // Flat toolbar controls use their actual bounds for equal height and padding.
+    override var alignmentRectInsets: NSEdgeInsets {
+        usesToolbarGeometry ? NSEdgeInsets() : super.alignmentRectInsets
+    }
     var onHover: ((Bool) -> Void)?
     private var hoverTracking: NSTrackingArea?
     override func updateTrackingAreas() {
