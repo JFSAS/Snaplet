@@ -65,6 +65,39 @@ final class AnnotationInteractionTests: XCTestCase {
         XCTAssertTrue(exported.items.isEmpty, "Delete must remove the selected text")
     }
 
+    func testEveryDrawingToolCanDragAndDeleteItsExistingAnnotation() throws {
+        let cases: [(AnnotationTool, [CGPoint], CGPoint)] = [
+            (.rectangle, [CGPoint(x: 200, y: 400), CGPoint(x: 400, y: 500)], CGPoint(x: 300, y: 500)),
+            (.ellipse, [CGPoint(x: 200, y: 400), CGPoint(x: 400, y: 500)], CGPoint(x: 300, y: 500)),
+            (.line, [CGPoint(x: 200, y: 400), CGPoint(x: 400, y: 500)], CGPoint(x: 300, y: 450)),
+            (.arrow, [CGPoint(x: 200, y: 400), CGPoint(x: 400, y: 500)], CGPoint(x: 300, y: 450)),
+            (.pen, [CGPoint(x: 200, y: 400), CGPoint(x: 300, y: 500), CGPoint(x: 400, y: 400)], CGPoint(x: 250, y: 450)),
+            (.number, [CGPoint(x: 200, y: 400)], CGPoint(x: 200, y: 400))
+        ]
+        for (tool, points, hit) in cases {
+            var document = AnnotationDocument()
+            document.append(Annotation(tool: tool, points: points, color: .red, width: 4, text: "1"))
+            let (view, window) = try overlay(annotations: document)
+            defer { window.close() }
+            try button(tool.title, in: view).performClick(nil)
+            let end = CGPoint(x: hit.x + 100, y: hit.y + 50)
+            view.mouseDown(with: try mouse(.leftMouseDown, at: hit, window: window))
+            view.mouseDragged(with: try mouse(.leftMouseDragged, at: end, window: window))
+            view.mouseUp(with: try mouse(.leftMouseUp, at: end, window: window))
+            var exported = AnnotationDocument()
+            view.onAction = { _, _, document in exported = document }
+            try button("完成 ✓", in: view).performClick(nil)
+            XCTAssertEqual(exported.items.count, 1, tool.title)
+            XCTAssertEqual(exported.items.first?.points, points.map { CGPoint(x: $0.x + 100, y: $0.y + 50) }, tool.title)
+            var history = exported
+            history.undo()
+            XCTAssertEqual(history.items.first?.points, points, tool.title)
+            view.keyDown(with: try key(51, window: window))
+            try button("完成 ✓", in: view).performClick(nil)
+            XCTAssertTrue(exported.items.isEmpty, tool.title)
+        }
+    }
+
     func testTextDeleteButtonAndTopmostHit() throws {
         var document = AnnotationDocument()
         for text in ["Behind", "Front"] {

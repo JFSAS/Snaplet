@@ -42,6 +42,28 @@ final class AnnotationTests: XCTestCase {
     }
 
     @MainActor
+    func testShapeHitTestingUsesVisibleStrokesAndArrowheads() {
+        let points = [CGPoint(x: 100, y: 100), CGPoint(x: 300, y: 200)]
+        let rectangle = Annotation(tool: .rectangle, points: points, color: .red, width: 4)
+        XCTAssertTrue(rectangle.contains(CGPoint(x: 200, y: 202)))
+        XCTAssertFalse(rectangle.contains(CGPoint(x: 200, y: 150)))
+        let ellipse = Annotation(tool: .ellipse, points: points, color: .red, width: 4)
+        XCTAssertTrue(ellipse.contains(CGPoint(x: 200, y: 200)))
+        XCTAssertFalse(ellipse.contains(CGPoint(x: 200, y: 150)))
+        XCTAssertFalse(ellipse.contains(CGPoint(x: 100, y: 100)))
+        let arrow = Annotation(tool: .arrow, points: [CGPoint(x: 100, y: 100), CGPoint(x: 200, y: 100)], color: .red, width: 12)
+        XCTAssertTrue(arrow.contains(CGPoint(x: 164, y: 122)), "Arrowhead is draggable too")
+        XCTAssertTrue(arrow.bounds.contains(CGPoint(x: 164, y: 122)))
+        let pen = Annotation(tool: .pen, points: [CGPoint(x: 100, y: 100), CGPoint(x: 200, y: 200), CGPoint(x: 300, y: 100)], color: .red, width: 4)
+        XCTAssertTrue(pen.contains(CGPoint(x: 150, y: 150)))
+        XCTAssertFalse(pen.contains(CGPoint(x: 200, y: 100)))
+        var document = AnnotationDocument()
+        document.append(rectangle)
+        document.append(ellipse)
+        XCTAssertEqual(document.index(at: CGPoint(x: 200, y: 200)), 1)
+    }
+
+    @MainActor
     func testAnnotationExportMatchesRetinaCropAndBottomLeftCoordinates() throws {
         let context = try XCTUnwrap(CGContext(data: nil, width: 200, height: 160,
             bitsPerComponent: 8, bytesPerRow: 0, space: CGColorSpace(name: CGColorSpace.sRGB)!,

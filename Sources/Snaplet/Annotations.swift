@@ -51,30 +51,60 @@ struct Annotation {
         copy.points = points.map { CGPoint(x: $0.x + delta.x, y: $0.y + delta.y) }
         return copy
     }
-    func draw() {
-        guard let first = points.first, let last = points.last else { return }
-        color.setStroke()
-        color.setFill()
-        let path = NSBezierPath()
-        path.lineWidth = width
-        path.lineCapStyle = .round
-        path.lineJoinStyle = .round
+    /// Drawing, bounds, and hit testing share the same geometry, including arrowheads.
+    private var strokePath: CGPath {
+        let path = CGMutablePath()
+        guard let first = points.first, let last = points.last else { return path }
         switch tool {
-        case .select: return
-        case .rectangle: path.appendRect(rect)
-        case .ellipse: path.appendOval(in: rect)
+        case .rectangle: path.addRect(rect)
+        case .ellipse: path.addEllipse(in: rect)
         case .line, .arrow, .pen:
             path.move(to: first)
-            for point in points.dropFirst() { path.line(to: point) }
+            for point in points.dropFirst() { path.addLine(to: point) }
             if tool == .arrow {
                 let angle = atan2(last.y - first.y, last.x - first.x)
                 let length = max(12, width * 4)
                 for offset in [-CGFloat.pi / 6, CGFloat.pi / 6] {
                     path.move(to: last)
-                    path.line(to: CGPoint(x: last.x - length * cos(angle + offset),
-                                          y: last.y - length * sin(angle + offset)))
+                    path.addLine(to: CGPoint(x: last.x - length * cos(angle + offset),
+                                            y: last.y - length * sin(angle + offset)))
                 }
             }
+        default: break
+        }
+        return path
+    }
+    var bounds: CGRect {
+        switch tool {
+        case .text: return textBounds
+        case .number:
+            guard let center = points.first else { return .zero }
+            let radius = max(12, width * 4)
+            return CGRect(x: center.x - radius, y: center.y - radius, width: radius * 2, height: radius * 2)
+        case .select: return .zero
+        default: return strokePath.boundingBoxOfPath.insetBy(dx: -width / 2, dy: -width / 2)
+        }
+    }
+    func contains(_ point: CGPoint) -> Bool {
+        switch tool {
+        case .select: return false
+        case .text: return textBounds.insetBy(dx: -5, dy: -5).contains(point)
+        case .number:
+            guard let center = points.first else { return false }
+            return hypot(point.x - center.x, point.y - center.y) <= bounds.width / 2 + 4
+        default:
+            let tolerance = max(10, width + 8)
+            if tool == .pen, let first = points.first, points.allSatisfy({ $0 == first }) {
+                return hypot(point.x - first.x, point.y - first.y) <= tolerance / 2
+            }
+            return strokePath.copy(strokingWithWidth: tolerance, lineCap: .round, lineJoin: .round, miterLimit: 10).contains(point)
+        }
+    }
+    func draw() {
+        guard let first = points.first else { return }
+        color.setFill()
+        switch tool {
+        case .select: return
         case .text:
             (text as NSString).draw(at: first, withAttributes: [
                 .font: font,
@@ -92,8 +122,17 @@ struct Annotation {
             (text as NSString).draw(at: CGPoint(x: first.x - size.width / 2,
                                                y: first.y - size.height / 2), withAttributes: attributes)
             return
+        default:
+            guard let context = NSGraphicsContext.current?.cgContext else { return }
+            context.saveGState()
+            context.setStrokeColor(color.cgColor)
+            context.setLineWidth(width)
+            context.setLineCap(.round)
+            context.setLineJoin(.round)
+            context.addPath(strokePath)
+            context.strokePath()
+            context.restoreGState()
         }
-        path.stroke()
     }
 }
 
@@ -128,8 +167,8 @@ struct AnnotationDocument {
     var nextNumber: Int {
         (items.filter { $0.tool == .number }.compactMap { Int($0.text) }.max() ?? 0) + 1
     }
-    func textIndex(at point: CGPoint) -> Int? {
-        items.indices.reversed().first { items[$0].tool == .text && items[$0].textBounds.insetBy(dx: -5, dy: -5).contains(point) }
+    func index(at point: CGPoint) -> Int? {
+        items.indices.reversed().first { items[$0].contains(point) }
     }
 
     func render(on image: CGImage, selection: CGRect, screenSize: CGSize,

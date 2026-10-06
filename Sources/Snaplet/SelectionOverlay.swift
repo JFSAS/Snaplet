@@ -89,10 +89,10 @@ final class SelectionView: NSView, NSTextFieldDelegate {
     private var textField: NSTextField?
     private var textOrigin: CGPoint?
     private var editingTextIndex: Int?
-    private var selectedTextIndex: Int?
-    private var textDrag: (index: Int, start: CGPoint, original: Annotation)?
-    private var movedText: Annotation?
-    private let deleteTextButton = HoverActionButton(title: "", target: nil, action: nil)
+    private var selectedAnnotationIndex: Int?
+    private var annotationDrag: (index: Int, start: CGPoint, original: Annotation)?
+    private var movedAnnotation: Annotation?
+    private let deleteAnnotationButton = HoverActionButton(title: "", target: nil, action: nil)
     private var hintControls: [(NSView, String)] = []
     private let toolbar = NSView()
     private let hoverLabel = NSTextField(labelWithString: "")
@@ -142,8 +142,8 @@ final class SelectionView: NSView, NSTextFieldDelegate {
             button.tag = tool.rawValue
             button.bezelStyle = .texturedRounded
             button.setButtonType(.toggle)
-            let hint = tool == .select ? "调整选区 · 拖动文字移动 · 双击文字编辑 · Delete 删除" :
-                (tool == .text ? "文字 · 单击添加或选中 · 拖动移动 · 双击编辑" : "\(tool.title) · \(tool == .number ? "单击添加编号" : "在选区内拖动绘制")")
+            let hint = tool == .select ? "调整选区 · 拖动标注移动 · 双击文字编辑 · Delete 删除" :
+                (tool == .text ? "文字 · 单击添加 · 拖动已有标注移动 · 双击文字编辑" : "\(tool.title) · \(tool == .number ? "单击添加编号" : "空白处拖动绘制") · 拖动已有标注移动")
             installHint(hint, for: button)
             button.setAccessibilityLabel(tool.title)
             button.widthAnchor.constraint(equalToConstant: 30).isActive = true
@@ -186,14 +186,14 @@ final class SelectionView: NSView, NSTextFieldDelegate {
         hoverLabel.layer?.masksToBounds = true
         hoverLabel.isHidden = true
         addSubview(hoverLabel)
-        deleteTextButton.image = NSImage(systemSymbolName: "xmark", accessibilityDescription: "删除文字")
-        deleteTextButton.target = self
-        deleteTextButton.action = #selector(deleteSelectedText)
-        deleteTextButton.bezelStyle = .circular
-        deleteTextButton.isHidden = true
-        deleteTextButton.setAccessibilityLabel("删除文字")
-        installHint("删除选中文字 · Delete / Backspace", for: deleteTextButton)
-        addSubview(deleteTextButton)
+        deleteAnnotationButton.image = NSImage(systemSymbolName: "xmark", accessibilityDescription: "删除文字")
+        deleteAnnotationButton.target = self
+        deleteAnnotationButton.action = #selector(deleteSelectedAnnotation)
+        deleteAnnotationButton.bezelStyle = .circular
+        deleteAnnotationButton.isHidden = true
+        deleteAnnotationButton.setAccessibilityLabel("删除文字")
+        installHint("删除选中标注 · Delete / Backspace", for: deleteAnnotationButton)
+        addSubview(deleteAnnotationButton)
         updateHoveredWindow(at: CGPoint(x: NSEvent.mouseLocation.x - screenFrame.minX, y: NSEvent.mouseLocation.y - screenFrame.minY))
     }
     required init?(coder: NSCoder) { fatalError("Programmatic overlay") }
@@ -264,10 +264,10 @@ final class SelectionView: NSView, NSTextFieldDelegate {
         commitText()
         document.reset()
         draft = nil
-        selectedTextIndex = nil
-        textDrag = nil
-        movedText = nil
-        deleteTextButton.isHidden = true
+        selectedAnnotationIndex = nil
+        annotationDrag = nil
+        movedAnnotation = nil
+        deleteAnnotationButton.isHidden = true
         tool = .select
         updateToolButtons()
         model.reset()
@@ -289,12 +289,11 @@ final class SelectionView: NSView, NSTextFieldDelegate {
             }
             addCursorRect(toolbar.frame, cursor: .arrow)
             addCursorRect(editbar.frame, cursor: .arrow)
-            if tool == .select || tool == .text {
-                for item in document.items where item.tool == .text {
-                    addCursorRect(item.textBounds.intersection(model.rect), cursor: .openHand)
-                }
+            for item in document.items {
+                let rect = item.bounds.intersection(model.rect)
+                if !rect.isNull && !rect.isEmpty { addCursorRect(rect, cursor: .openHand) }
             }
-            if !deleteTextButton.isHidden { addCursorRect(deleteTextButton.frame, cursor: .arrow) }
+            if !deleteAnnotationButton.isHidden { addCursorRect(deleteAnnotationButton.frame, cursor: .arrow) }
         }
     }
     override func mouseDown(with event: NSEvent) {
@@ -302,17 +301,17 @@ final class SelectionView: NSView, NSTextFieldDelegate {
         window?.makeFirstResponder(self)
         let point = convert(event.locationInWindow, from: nil)
         commitText()
-        if model.canConfirm, (tool == .select || tool == .text),
-           let index = document.textIndex(at: point), model.rect.contains(point) {
-            selectedTextIndex = index
-            if event.clickCount == 2 { beginText(at: document.items[index].points[0], editing: index) }
-            else { textDrag = (index, point, document.items[index]) }
-            updateTextSelection()
+        if model.canConfirm, !event.modifierFlags.contains(.option),
+           let index = document.index(at: point), model.rect.contains(point) {
+            selectedAnnotationIndex = index
+            if event.clickCount == 2 && document.items[index].tool == .text { beginText(at: document.items[index].points[0], editing: index) }
+            else { annotationDrag = (index, point, document.items[index]) }
+            updateAnnotationSelection()
             needsDisplay = true
             return
         }
-        selectedTextIndex = nil
-        updateTextSelection()
+        selectedAnnotationIndex = nil
+        updateAnnotationSelection()
         if model.canConfirm && tool != .select {
             guard model.rect.contains(point) else { return }
             let width = CGFloat(Double(widthPicker.titleOfSelectedItem ?? "4") ?? 4)
@@ -347,12 +346,12 @@ final class SelectionView: NSView, NSTextFieldDelegate {
     }
     override func mouseDragged(with event: NSEvent) {
         let point = convert(event.locationInWindow, from: nil)
-        if let drag = textDrag {
-            let rect = drag.original.textBounds
+        if let drag = annotationDrag {
+            let rect = drag.original.bounds
             let dx = min(max(point.x - drag.start.x, model.rect.minX - rect.minX), max(model.rect.minX - rect.minX, model.rect.maxX - rect.maxX))
             let dy = min(max(point.y - drag.start.y, model.rect.minY - rect.minY), max(model.rect.minY - rect.minY, model.rect.maxY - rect.maxY))
-            movedText = drag.original.translated(by: CGPoint(x: dx, y: dy))
-            updateTextSelection()
+            movedAnnotation = drag.original.translated(by: CGPoint(x: dx, y: dy))
+            updateAnnotationSelection()
             needsDisplay = true
             return
         }
@@ -371,13 +370,13 @@ final class SelectionView: NSView, NSTextFieldDelegate {
         refresh()
     }
     override func mouseUp(with event: NSEvent) {
-        if let drag = textDrag {
-            if let movedText, movedText.points != drag.original.points {
-                document.replace(at: drag.index, with: movedText)
+        if let drag = annotationDrag {
+            if let movedAnnotation, movedAnnotation.points != drag.original.points {
+                document.replace(at: drag.index, with: movedAnnotation)
             }
-            textDrag = nil
-            movedText = nil
-            updateTextSelection()
+            annotationDrag = nil
+            movedAnnotation = nil
+            updateAnnotationSelection()
             needsDisplay = true
             return
         }
@@ -404,9 +403,9 @@ final class SelectionView: NSView, NSTextFieldDelegate {
     override func rightMouseDown(with event: NSEvent) { onCancel?() }
     override func keyDown(with event: NSEvent) {
         switch event.keyCode {
-        case 51, 117: deleteSelectedText()
+        case 51, 117: deleteSelectedAnnotation()
         case 53:
-            if selectedTextIndex != nil { selectedTextIndex = nil; updateTextSelection(); needsDisplay = true }
+            if selectedAnnotationIndex != nil { selectedAnnotationIndex = nil; updateAnnotationSelection(); needsDisplay = true }
             else { onCancel?() }
         case 36, 76: finish()
         case 49: confirm(.quickSave)
@@ -485,47 +484,49 @@ final class SelectionView: NSView, NSTextFieldDelegate {
                 if previous.text != item.text || previous.points != item.points {
                     document.replace(at: editingTextIndex, with: item)
                 }
-                selectedTextIndex = editingTextIndex
+                selectedAnnotationIndex = editingTextIndex
             } else {
                 document.append(item)
-                selectedTextIndex = document.items.count - 1
+                selectedAnnotationIndex = document.items.count - 1
             }
         } else if let editingTextIndex {
             document.remove(at: editingTextIndex)
-            selectedTextIndex = nil
+            selectedAnnotationIndex = nil
         }
         field.removeFromSuperview()
         textField = nil
         textOrigin = nil
         editingTextIndex = nil
-        updateTextSelection()
+        updateAnnotationSelection()
         window?.invalidateCursorRects(for: self)
         needsDisplay = true
     }
-    private func updateTextSelection() {
+    private func updateAnnotationSelection() {
         defer { window?.invalidateCursorRects(for: self) }
-        guard let index = selectedTextIndex, document.items.indices.contains(index), textField == nil else {
-            deleteTextButton.isHidden = true
+        guard let index = selectedAnnotationIndex, document.items.indices.contains(index), textField == nil else {
+            deleteAnnotationButton.isHidden = true
             return
         }
-        let rect = (movedText ?? document.items[index]).textBounds
-        deleteTextButton.frame = CGRect(x: min(bounds.maxX - 28, rect.maxX + 4),
+        let rect = (movedAnnotation ?? document.items[index]).bounds
+        deleteAnnotationButton.frame = CGRect(x: min(bounds.maxX - 28, rect.maxX + 4),
             y: min(bounds.maxY - 28, rect.maxY - 12), width: 24, height: 24)
-        deleteTextButton.isHidden = false
+        let title = "删除\(document.items[index].tool.title)"
+        deleteAnnotationButton.setAccessibilityLabel(title)
+        deleteAnnotationButton.isHidden = false
     }
-    @objc private func deleteSelectedText() {
-        guard let index = selectedTextIndex else { return }
+    @objc private func deleteSelectedAnnotation() {
+        guard let index = selectedAnnotationIndex else { return }
         document.remove(at: index)
-        selectedTextIndex = nil
-        updateTextSelection()
+        selectedAnnotationIndex = nil
+        updateAnnotationSelection()
         window?.makeFirstResponder(self)
         needsDisplay = true
     }
     @objc private func undoAnnotation() {
-        commitText(); document.undo(); selectedTextIndex = nil; updateTextSelection(); needsDisplay = true
+        commitText(); document.undo(); selectedAnnotationIndex = nil; updateAnnotationSelection(); needsDisplay = true
     }
     @objc private func redoAnnotation() {
-        commitText(); document.redo(); selectedTextIndex = nil; updateTextSelection(); needsDisplay = true
+        commitText(); document.redo(); selectedAnnotationIndex = nil; updateAnnotationSelection(); needsDisplay = true
     }
     @objc private func reselect() { resetSelection(); window?.makeFirstResponder(self) }
     @objc private func pin() { confirm(.pin) }
@@ -575,11 +576,11 @@ final class SelectionView: NSView, NSTextFieldDelegate {
         NSBezierPath(rect: model.rect).addClip()
         for (index, item) in document.items.enumerated() {
             if index == editingTextIndex { continue }
-            if index == textDrag?.index, let movedText { movedText.draw() }
+            if index == annotationDrag?.index, let movedAnnotation { movedAnnotation.draw() }
             else { item.draw() }
         }
-        if let index = selectedTextIndex, document.items.indices.contains(index), textField == nil {
-            let box = NSBezierPath(rect: (movedText ?? document.items[index]).textBounds.insetBy(dx: -4, dy: -4))
+        if let index = selectedAnnotationIndex, document.items.indices.contains(index), textField == nil {
+            let box = NSBezierPath(rect: (movedAnnotation ?? document.items[index]).bounds.insetBy(dx: -4, dy: -4))
             NSColor.systemBlue.setStroke()
             box.lineWidth = 1
             box.setLineDash([4, 3], count: 2, phase: 0)
