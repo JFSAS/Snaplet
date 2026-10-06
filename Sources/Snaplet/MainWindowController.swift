@@ -4,12 +4,13 @@ import AppKit
 final class MainWindowController: NSWindowController, NSWindowDelegate {
     private let onCapture: () -> Void
     private let shortcut: GlobalShortcut
+    private let saveLocation = NSTextField(labelWithString: "")
 
     init(shortcut: GlobalShortcut, onCapture: @escaping () -> Void) {
         self.shortcut = shortcut
         self.onCapture = onCapture
         let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 560, height: 440),
+            contentRect: NSRect(x: 0, y: 0, width: 600, height: 550),
             styleMask: [.titled, .closable, .miniaturizable],
             backing: .buffered,
             defer: false
@@ -42,7 +43,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         subtitle.textColor = .secondaryLabelColor
 
         let description = NSTextField(wrappingLabelWithString:
-            "拖动框选，预览后复制或保存 PNG。\n按 Esc 或右键取消；关闭窗口后可从菜单栏截图。"
+            "框选后调整区域，再确认完成。\nEnter / 双击复制，空格保存，Esc 或右键取消。"
         )
         description.alignment = .center
         description.textColor = .secondaryLabelColor
@@ -79,9 +80,19 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         shortcutHint.font = .systemFont(ofSize: 12)
         shortcutHint.alignment = .center
         shortcutHint.textColor = .secondaryLabelColor
+        let soundToggle = NSButton(checkboxWithTitle: "截图完成时播放音效", target: self,
+                                   action: #selector(toggleSound(_:)))
+        soundToggle.state = CaptureFeedback.soundEnabled ? .on : .off
+        let folderButton = NSButton(title: "设置截图保存位置…", target: self, action: #selector(chooseDirectory))
+        folderButton.bezelStyle = .rounded
+        updateSaveLocation()
+        saveLocation.font = .systemFont(ofSize: 12)
+        saveLocation.textColor = .secondaryLabelColor
+        saveLocation.lineBreakMode = .byTruncatingMiddle
 
         let stack = NSStackView(views: [icon, title, subtitle, description, captureButton,
-                                     shortcutButton, shortcutHint, closeButton])
+                                     shortcutButton, shortcutHint, soundToggle, folderButton,
+                                     saveLocation, closeButton])
         stack.orientation = .vertical
         stack.alignment = .centerX
         stack.spacing = 16
@@ -97,6 +108,27 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
     }
 
     @objc private func startCapture() { onCapture() }
+    @objc private func toggleSound(_ sender: NSButton) {
+        CaptureFeedback.soundEnabled = sender.state == .on
+    }
+    private func updateSaveLocation() {
+        saveLocation.stringValue = "空格保存到：" + (CaptureOutput.directory.path as NSString).abbreviatingWithTildeInPath
+    }
+    @objc private func chooseDirectory() {
+        guard let window else { return }
+        let panel = NSOpenPanel()
+        panel.canChooseDirectories = true
+        panel.canChooseFiles = false
+        panel.canCreateDirectories = true
+        panel.allowsMultipleSelection = false
+        panel.prompt = "选择保存位置"
+        panel.directoryURL = CaptureOutput.directory
+        panel.beginSheetModal(for: window) { [weak self] response in
+            guard response == .OK, let url = panel.url else { return }
+            CaptureOutput.directory = url
+            self?.updateSaveLocation()
+        }
+    }
 
     @objc private func closeWindow() {
         window?.close()

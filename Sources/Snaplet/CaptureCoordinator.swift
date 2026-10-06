@@ -1,10 +1,12 @@
 import AppKit
+import UniformTypeIdentifiers
 
 @MainActor
 final class CaptureCoordinator {
     private let overlay = SelectionOverlay()
     private var isCapturing = false
     private var hiddenWindows: [NSWindow] = []
+    private var snapshots: [(NSScreen, CGImage)] = []
     private var preview: CapturePreviewController?
 
     func start() {
@@ -16,36 +18,102 @@ final class CaptureCoordinator {
         isCapturing = true
         hiddenWindows = NSApp.windows.filter { $0.isVisible && $0.level == .normal }
         hiddenWindows.forEach { $0.orderOut(nil) }
-        overlay.begin(onSelection: { [weak self] screen, rect in
-            guard let self else { return }
-            Task {
-                do {
-                    let image = try await CaptureService.capture(screen: screen, selection: rect)
-                    self.restoreWindows()
-                    let controller = CapturePreviewController(image: image)
-                    self.preview?.close()
-                    self.preview = controller
-                    controller.onClose = { [weak self] in self?.preview = nil }
-                    controller.showWindow(nil)
-                    NSApp.activate(ignoringOtherApps: true)
-                } catch {
-                    self.restoreWindows()
-                    let alert = NSAlert()
-                    alert.messageText = "截图失败"
-                    alert.informativeText = error.localizedDescription
-                    alert.runModal()
+        Task {
+            do {
+                // Freeze the desktop before showing any selection UI.
+                for screen in NSScreen.screens {
+                    let image = try await CaptureService.capture(screen: screen,
+                        selection: CGRect(origin: .zero, size: screen.frame.size))
+                    snapshots.append((screen, image))
                 }
-                self.isCapturing = false
+                guard !snapshots.isEmpty else { throw CaptureError.displayUnavailable }
+                showOverlay()
+            } catch {
+                endSession()
+                showError(error)
             }
-        }, onCancel: { [weak self] in
-            self?.restoreWindows()
-            self?.isCapturing = false
-        })
+        }
     }
 
-    private func restoreWindows() {
+    private func showOverlay(initialSelection: (NSScreen, CGRect)? = nil) {
+        overlay.begin(snapshots: snapshots, initialSelection: initialSelection,
+            onAction: { [weak self] screen, rect, action in
+                self?.finish(screen: screen, rect: rect, action: action)
+            }, onCancel: { [weak self] in self?.endSession() })
+    }
+
+    private func finish(screen: NSScreen, rect: CGRect, action: CaptureAction) {
+        guard let snapshot = snapshots.first(where: { $0.0 === screen })?.1 else { return }
+        do {
+            let image = try CaptureService.crop(image: snapshot, selection: rect, screenSize: screen.frame.size)
+            switch action {
+            case .copy:
+                let png = try CaptureService.pngData(for: image)
+                let pasteboard = NSPasteboard.general
+                pasteboard.clearContents()
+                guard pasteboard.setData(png, forType: .png) else { throw CaptureError.encodingFailed }
+                endSession()
+                CaptureFeedback.success()
+            case .preview:
+                endSession()
+                let controller = CapturePreviewController(image: image)
+                preview?.close()
+                preview = controller
+                controller.onClose = { [weak self] in self?.preview = nil }
+                controller.showWindow(nil)
+                NSApp.activate(ignoringOtherApps: true)
+                CaptureFeedback.success()
+            case .save:
+                save(image: image, screen: screen, rect: rect)
+            case .quickSave:
+                try CaptureOutput.save(image, to: CaptureOutput.directory)
+                endSession()
+                CaptureFeedback.success()
+            }
+        } catch {
+            overlay.dismiss()
+            showError(error)
+            showOverlay(initialSelection: (screen, rect))
+        }
+    }
+
+    private func save(image: CGImage, screen: NSScreen, rect: CGRect) {
+        overlay.dismiss()
+        let panel = NSSavePanel()
+        panel.allowedContentTypes = [.png]
+        let formatter = DateFormatter()
+        formatter.dateFormat = "yyyy-MM-dd_HH-mm-ss"
+        panel.nameFieldStringValue = "Snaplet_\(formatter.string(from: Date())).png"
+        NSApp.activate(ignoringOtherApps: true)
+        panel.begin { [weak self] response in
+            guard let self else { return }
+            guard response == .OK, let url = panel.url else {
+                self.showOverlay(initialSelection: (screen, rect))
+                return
+            }
+            do {
+                try CaptureService.pngData(for: image).write(to: url, options: .atomic)
+                self.endSession()
+                CaptureFeedback.success()
+            } catch {
+                self.showError(error)
+                self.showOverlay(initialSelection: (screen, rect))
+            }
+        }
+    }
+
+    private func endSession() {
+        overlay.dismiss()
+        snapshots.removeAll()
         hiddenWindows.forEach { $0.orderFront(nil) }
         hiddenWindows.removeAll()
+        isCapturing = false
+    }
+
+    private func showError(_ error: Error) {
+        let alert = NSAlert(error: error)
+        alert.messageText = "截图操作失败"
+        alert.runModal()
     }
 
     private func showPermissionHelp() {

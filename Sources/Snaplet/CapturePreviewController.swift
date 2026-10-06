@@ -65,6 +65,7 @@ final class CapturePreviewController: NSWindowController, NSWindowDelegate {
             NSPasteboard.general.clearContents()
             if NSPasteboard.general.setData(png, forType: .png) {
                 feedback.stringValue = "已复制"
+                CaptureFeedback.success()
             } else {
                 feedback.stringValue = "复制失败，请重试"
             }
@@ -84,6 +85,7 @@ final class CapturePreviewController: NSWindowController, NSWindowDelegate {
             do {
                 try CaptureService.pngData(for: image).write(to: url, options: .atomic)
                 self.feedback.stringValue = "已保存"
+                CaptureFeedback.success()
             } catch { self.showError(error) }
         }
     }
