@@ -6,6 +6,7 @@ final class CaptureCoordinator {
     private let overlay = SelectionOverlay()
     private var isCapturing = false
     private var hiddenWindows: [NSWindow] = []
+    private var windowCandidates: [WindowCandidate] = []
     private var snapshots: [(NSScreen, CGImage)] = []
     private var pins: [UUID: PinnedImageController] = [:]
     private var preview: CapturePreviewController?
@@ -19,6 +20,7 @@ final class CaptureCoordinator {
         isCapturing = true
         hiddenWindows = NSApp.windows.filter { $0.isVisible && $0.level == .normal }
         hiddenWindows.forEach { $0.orderOut(nil) }
+        windowCandidates = WindowSelection.visibleWindows()
         Task {
             do {
                 // Freeze the desktop before showing any selection UI.
@@ -37,7 +39,7 @@ final class CaptureCoordinator {
     }
 
     private func showOverlay(initialSelection: (NSScreen, CGRect)? = nil) {
-        overlay.begin(snapshots: snapshots, initialSelection: initialSelection,
+        overlay.begin(snapshots: snapshots, candidates: windowCandidates, initialSelection: initialSelection,
             onAction: { [weak self] screen, rect, action in
                 self?.finish(screen: screen, rect: rect, action: action)
             }, onCancel: { [weak self] in self?.endSession() })
@@ -111,6 +113,7 @@ final class CaptureCoordinator {
     private func endSession() {
         overlay.dismiss()
         snapshots.removeAll()
+        windowCandidates.removeAll()
         hiddenWindows.forEach { $0.orderFront(nil) }
         hiddenWindows.removeAll()
         isCapturing = false

@@ -5,7 +5,7 @@ final class SelectionOverlay {
     private var windows: [NSWindow] = []
     private var cancellation: (() -> Void)?
 
-    func begin(snapshots: [(NSScreen, CGImage)],
+    func begin(snapshots: [(NSScreen, CGImage)], candidates: [WindowCandidate],
                initialSelection: (NSScreen, CGRect)? = nil,
                onAction: @escaping (NSScreen, CGRect, CaptureAction) -> Void,
                onCancel: @escaping () -> Void) {
@@ -18,9 +18,10 @@ final class SelectionOverlay {
             window.backgroundColor = .clear
             window.isOpaque = false
             window.hasShadow = false
+            window.acceptsMouseMovedEvents = true
             window.isReleasedWhenClosed = false
             window.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
-            let view = SelectionView(frame: CGRect(origin: .zero, size: screen.frame.size), image: image)
+            let view = SelectionView(frame: CGRect(origin: .zero, size: screen.frame.size), image: image, screenFrame: screen.frame, candidates: candidates)
             view.onAction = { rect, action in onAction(screen, rect, action) }
             view.onCancel = { [weak self] in self?.cancel() }
             view.onBegin = { [weak self, weak view] in
@@ -65,11 +66,20 @@ private final class SelectionView: NSView {
     var onBegin: (() -> Void)?
     private var model = SelectionModel()
     private let background: NSImage
+    private let screenFrame: CGRect
+    private let candidates: [WindowCandidate]
+    private var hoveredWindow: WindowCandidate?
+    private var pendingWindow: WindowCandidate?
+    private var dragStart: CGPoint?
+    private var hasDragged = false
+    private var hoverTracking: NSTrackingArea?
     private let toolbar = NSView()
     private let hoverLabel = NSTextField(labelWithString: "")
     override var acceptsFirstResponder: Bool { true }
 
-    init(frame: CGRect, image: CGImage) {
+    init(frame: CGRect, image: CGImage, screenFrame: CGRect, candidates: [WindowCandidate]) {
+        self.screenFrame = screenFrame
+        self.candidates = candidates
         background = NSImage(cgImage: image, size: frame.size)
         super.init(frame: frame)
         setAccessibilityLabel("截图框选区域")
@@ -108,6 +118,7 @@ private final class SelectionView: NSView {
         hoverLabel.layer?.masksToBounds = true
         hoverLabel.isHidden = true
         addSubview(hoverLabel)
+        updateHoveredWindow(at: CGPoint(x: NSEvent.mouseLocation.x - screenFrame.minX, y: NSEvent.mouseLocation.y - screenFrame.minY))
     }
     required init?(coder: NSCoder) { fatalError("Programmatic overlay") }
     private func button(_ title: String, _ action: Selector) -> NSButton {
@@ -141,7 +152,30 @@ private final class SelectionView: NSView {
         button.heightAnchor.constraint(equalToConstant: 26).isActive = true
         return button
     }
-    func resetSelection() { model.reset(); refresh() }
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        if let hoverTracking { removeTrackingArea(hoverTracking) }
+        let area = NSTrackingArea(rect: bounds, options: [.mouseMoved, .mouseEnteredAndExited, .activeAlways, .inVisibleRect], owner: self)
+        addTrackingArea(area)
+        hoverTracking = area
+    }
+    override func mouseMoved(with event: NSEvent) {
+        guard model.phase == .idle else { return }
+        updateHoveredWindow(at: convert(event.locationInWindow, from: nil))
+    }
+    override func mouseEntered(with event: NSEvent) { mouseMoved(with: event) }
+    override func mouseExited(with event: NSEvent) {
+        if model.phase == .idle { hoveredWindow = nil; needsDisplay = true }
+    }
+    private func updateHoveredWindow(at point: CGPoint) {
+        hoveredWindow = WindowSelection.candidate(at: point, screenFrame: screenFrame, windows: candidates)
+        needsDisplay = true
+    }
+    func resetSelection() {
+        model.reset()
+        updateHoveredWindow(at: CGPoint(x: NSEvent.mouseLocation.x - screenFrame.minX, y: NSEvent.mouseLocation.y - screenFrame.minY))
+        refresh()
+    }
     func restoreSelection(_ selection: CGRect) { model.restore(selection); refresh() }
 
     override func resetCursorRects() {
@@ -163,18 +197,31 @@ private final class SelectionView: NSView {
         if model.canConfirm && model.rect.contains(point) && event.clickCount == 2 {
             finish(); return
         }
+        pendingWindow = (!model.canConfirm || !model.rect.contains(point))
+            ? WindowSelection.candidate(at: point, screenFrame: screenFrame, windows: candidates) : nil
+        dragStart = point
+        hasDragged = false
+        hoveredWindow = nil
         onBegin?()
         model.begin(at: point)
         refresh()
     }
     override func mouseDragged(with event: NSEvent) {
-        model.update(to: convert(event.locationInWindow, from: nil), within: bounds)
+        let point = convert(event.locationInWindow, from: nil)
+        if let dragStart, hypot(point.x - dragStart.x, point.y - dragStart.y) > 3 { hasDragged = true }
+        if hasDragged { model.update(to: point, within: bounds) }
         refresh()
     }
     override func mouseUp(with event: NSEvent) {
         guard model.phase == .dragging else { return }
-        model.update(to: convert(event.locationInWindow, from: nil), within: bounds)
-        model.end()
+        if !hasDragged, let pendingWindow {
+            model.restore(pendingWindow.frame)
+        } else {
+            model.update(to: convert(event.locationInWindow, from: nil), within: bounds)
+            model.end()
+        }
+        pendingWindow = nil
+        dragStart = nil
         refresh()
     }
     override func rightMouseDown(with event: NSEvent) { onCancel?() }
@@ -222,14 +269,15 @@ private final class SelectionView: NSView {
     }
     override func draw(_ dirtyRect: NSRect) {
         background.draw(in: bounds)
+        let displayRect = model.rect.isEmpty ? (hoveredWindow?.frame ?? .zero) : model.rect
         let shade = NSBezierPath(rect: bounds)
-        if !model.rect.isEmpty { shade.append(NSBezierPath(rect: model.rect)) }
+        if !displayRect.isEmpty { shade.append(NSBezierPath(rect: displayRect)) }
         shade.windingRule = .evenOdd
         NSColor.black.withAlphaComponent(0.3).setFill()
         shade.fill()
-        if !model.rect.isEmpty {
+        if !displayRect.isEmpty {
             NSColor.systemBlue.setStroke()
-            let border = NSBezierPath(rect: model.rect.insetBy(dx: 0.5, dy: 0.5))
+            let border = NSBezierPath(rect: displayRect.insetBy(dx: 0.5, dy: 0.5))
             border.lineWidth = 1
             border.stroke()
         }
@@ -244,7 +292,7 @@ private final class SelectionView: NSView {
         }
         let text: String
         switch model.phase {
-        case .idle: text = "拖动选择截图区域 · Esc 或右键取消"
+        case .idle: text = hoveredWindow.map { "\($0.title) · 单击选择窗口 · 拖动框选" } ?? "拖动框选 · 悬停选择窗口 · Esc 取消"
         case .dragging: text = "\(Int(model.rect.width)) × \(Int(model.rect.height)) pt · 松开后调整选区"
         case .ready: text = "\(Int(model.rect.width)) × \(Int(model.rect.height)) pt"
         }
@@ -253,8 +301,8 @@ private final class SelectionView: NSView {
         ]
         let size = (text as NSString).size(withAttributes: attributes)
         let label = CGRect(
-            x: model.phase == .idle ? (bounds.width - size.width) / 2 - 10 : min(max(8, model.rect.minX), bounds.maxX - size.width - 28),
-            y: model.phase == .idle ? bounds.height - 65 : min(bounds.maxY - size.height - 20, model.rect.maxY + 8),
+            x: displayRect.isEmpty ? (bounds.width - size.width) / 2 - 10 : min(max(8, displayRect.minX), bounds.maxX - size.width - 28),
+            y: displayRect.isEmpty ? bounds.height - 65 : max(8, min(bounds.maxY - size.height - 20, displayRect.maxY + 8)),
             width: size.width + 20, height: size.height + 12)
         NSColor.black.withAlphaComponent(0.7).setFill()
         NSBezierPath(roundedRect: label, xRadius: 10, yRadius: 10).fill()

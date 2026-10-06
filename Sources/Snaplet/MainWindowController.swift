@@ -50,7 +50,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         captureButton.keyEquivalent = "\r"
         let captureHeading = UI.horizontal([
             UI.vertical([UI.label("区域截图", size: 15, weight: .semibold),
-                         UI.label("自由框选，调整后再完成。", size: 12, color: .secondaryLabelColor)], spacing: 5),
+                         UI.label("框选区域，或单击选择窗口。", size: 12, color: .secondaryLabelColor)], spacing: 5),
             UI.spacer(), captureButton
         ])
         let guide = UI.horizontal([keyHint("↵", text: "复制"), UI.spacer(), keyHint("空格", text: "保存"),
@@ -100,7 +100,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         UI.embed(shortcutRow, in: shortcutCard, inset: 14)
         let capturePane = UI.vertical([
             UI.label("截图", size: 20, weight: .semibold), captureCard, shortcutCard,
-            UI.label("拖动选区移动 · 拖动控制点调整大小", size: 11, color: .secondaryLabelColor)
+            UI.label("悬停识别窗口 · 单击选择 · 拖动框选", size: 11, color: .secondaryLabelColor)
         ], spacing: 16)
         let settingsPane = UI.vertical([
             UI.label("保存与声音", size: 20, weight: .semibold),
